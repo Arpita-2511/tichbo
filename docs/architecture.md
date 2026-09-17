@@ -1,140 +1,127 @@
 # Tichboo — System Architecture
 
-## 1. Purpose
+## 1. Architecture Overview
 
-This document describes the technical architecture of Tichboo, a scalable ticket-booking platform supporting movies, events, shows, and sports matches.
+Tichboo uses a microservices-based architecture.
 
-The architecture is designed to demonstrate how a distributed ticket-booking system can handle authentication, traffic management, dynamic rate limiting, concurrent bookings, persistent data, asynchronous processing, monitoring, and analytics.
+The system is divided into independently responsible services rather than implementing all functionality inside one backend application.
 
----
-
-# 2. Architectural Goals
-
-The architecture has the following goals:
-
-1. Separate business responsibilities into independent services.
-2. Provide a single entry point for client requests.
-3. Protect backend services from excessive traffic.
-4. Support dynamic rate-limit policies.
-5. Prevent double booking during concurrent requests.
-6. Maintain independent data ownership.
-7. Allow services to scale independently.
-8. Support asynchronous communication.
-9. Provide system observability.
-10. Allow future integration of data science and machine learning.
-
----
-
-# 3. High-Level System
+The major architectural components are:
 
 ```text
-                         CLIENT
-                  Web / Mobile Application
-                           |
-                           | HTTPS
-                           ▼
-                ┌────────────────────────┐
-                │      API GATEWAY       │
-                │                        │
-                │ • Routing              │
-                │ • Authentication       │
-                │ • Rate Limiting        │
-                │ • Request Logging      │
-                │ • Request ID           │
-                └───────────┬────────────┘
-                            |
-            ┌───────────────┼────────────────┐
-            │               │                │
-            ▼               ▼                ▼
-      User Service    Catalog Service   Booking Service
-            │               │                │
-            ▼               ▼                ▼
-       User DB          Catalog DB        Booking DB
-                                            │
-                                            ▼
-                                          Redis
+                    ┌───────────────────┐
+                    │      Client       │
+                    │   Web Frontend    │
+                    └─────────┬─────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │    API Gateway    │
+                    │                   │
+                    │ Routing           │
+                    │ Authentication    │
+                    │ Rate Limiting     │
+                    │ Logging           │
+                    └─────────┬─────────┘
+                              │
+             ┌────────────────┼────────────────┐
+             │                │                │
+             ▼                ▼                ▼
+       ┌───────────┐   ┌────────────┐   ┌────────────┐
+       │   User    │   │  Catalog   │   │  Booking   │
+       │  Service  │   │  Service   │   │  Service   │
+       └─────┬─────┘   └─────┬──────┘   └─────┬──────┘
+             │               │                │
+             ▼               ▼                ▼
+          User DB        Catalog DB       Booking DB
+                                             │
+                                             ▼
+                                           Redis
 ```
 
-Additional infrastructure:
-
-```text
-Booking / Payment / Other Services
-              |
-              ▼
-        Message Broker
-        Kafka/RabbitMQ
-              |
-      ┌───────┼────────┐
-      ▼       ▼        ▼
-   Payment  Analytics Notifications
-    Service   / ML       Service
-```
+Additional services can be introduced as the project evolves.
 
 ---
 
-# 4. Client Layer
+# 2. Architectural Objectives
 
-The client layer contains the web application.
+The architecture is designed to achieve:
 
-Possible implementation:
+* Separation of concerns
+* Independent service ownership
+* Centralized request management
+* Dynamic traffic control
+* Secure authentication
+* Concurrency-safe booking
+* Independent scalability
+* Fault isolation
+* Observability
+* Future ML integration
 
-* React
-* Next.js
-* Tailwind CSS
+---
+
+# 3. Client Layer
+
+The client is the user-facing web application.
+
+The planned frontend technology is:
+
+* React or Next.js
 * TypeScript
+* Tailwind CSS
 
-The frontend is responsible for user interaction.
-
-Examples:
+The frontend provides:
 
 * Registration
 * Login
-* Browsing events
-* Searching shows
-* Viewing seat availability
-* Selecting seats
-* Booking tickets
-* Viewing bookings
-* Managing profile
+* Home/catalog
+* Search
+* Event/show details
+* Seat selection
+* Booking
+* Booking history
+* User profile
+* Admin dashboard
 
-The frontend should communicate with the backend through the API Gateway rather than directly accessing individual microservices.
+The frontend communicates with the backend through the API Gateway.
+
+It should not directly access internal microservices.
 
 ---
 
-# 5. API Gateway Layer
+# 4. API Gateway
 
-The API Gateway is implemented using Spring Cloud Gateway.
+The API Gateway is the central entry point into the backend.
 
-It acts as the entry point for backend requests.
+Planned implementation:
 
-Instead of:
+**Spring Cloud Gateway**
 
-```text
-Frontend → User Service
-Frontend → Catalog Service
-Frontend → Booking Service
-```
-
-the architecture uses:
+Architecture:
 
 ```text
-Frontend
-    |
-    ▼
+Client
+   |
+   ▼
 API Gateway
-    |
-    ├── User Service
-    ├── Catalog Service
-    └── Booking Service
+   |
+   ├── User Service
+   ├── Catalog Service
+   ├── Booking Service
+   └── Payment Service
 ```
 
-## Gateway Responsibilities
+The Gateway provides cross-cutting functionality that should apply across multiple services.
 
-### 5.1 Routing
+---
 
-The Gateway determines which service should receive a request.
+# 5. Gateway Responsibilities
 
-Example:
+## 5.1 Request Routing
+
+The Gateway routes incoming requests to the appropriate service.
+
+Conceptually:
 
 ```text
 /api/users/**       → User Service
@@ -144,69 +131,99 @@ Example:
 /api/payments/**    → Payment Service
 ```
 
-### 5.2 Authentication
+The exact route configuration will be finalized during API implementation.
+
+---
+
+## 5.2 Authentication
 
 The Gateway can validate JWT tokens before forwarding protected requests.
-
-Example:
 
 ```text
 Request
    |
    ▼
-JWT present?
+Gateway
    |
-   ├── No → Reject
+   ▼
+JWT Validation
    |
-   └── Yes
+   ├── Invalid → Reject
+   |
+   └── Valid
          |
          ▼
-      Validate
-         |
-         ▼
-      Forward
+    Forward Request
 ```
 
-The downstream service can still enforce authorization for its own business operations.
+Authorization rules remain the responsibility of the appropriate business service as required.
 
-### 5.3 Rate Limiting
+---
 
-The Gateway checks whether a request is allowed before forwarding it.
+## 5.3 Rate Limiting
 
-### 5.4 Request Identification
+The Gateway performs rate-limit checks before forwarding requests.
 
-Each incoming request can receive a unique request ID.
+```text
+Request
+   |
+   ▼
+Gateway
+   |
+   ▼
+Rate-limit check
+   |
+   ├── Allowed → Backend Service
+   |
+   └── Exceeded → HTTP 429
+```
 
-This helps trace a request across multiple services.
+This protects downstream services from excessive traffic.
 
-### 5.5 Logging
+---
 
-The Gateway can record:
+## 5.4 Request Logging
 
-* Request path
-* HTTP method
-* User/request identity
-* Response status
-* Processing time
-* Rate-limit result
+The Gateway records request-related information for operational visibility.
+
+---
+
+## 5.5 Request ID
+
+Each request can receive a unique request identifier.
+
+Example:
+
+```text
+Client
+   |
+   | Request ID: ABC123
+   ▼
+Gateway
+   |
+   | ABC123
+   ▼
+Booking Service
+```
+
+This allows the request to be traced across multiple services.
 
 ---
 
 # 6. User Service
 
-The User Service owns user-related functionality.
+The User Service owns user/account functionality.
 
-## Responsibilities
+Responsibilities:
 
-* User registration
-* User information
-* Login-related operations
-* User profiles
-* Subscription plans
+* Registration
+* Login
+* User profile
 * User roles
+* Subscription plans
 * Account management
 
-## Example data
+Conceptual data:
 
 ```text
 User
@@ -221,17 +238,17 @@ created_at
 updated_at
 ```
 
-The service owns its own database.
+The User Service owns its user data.
 
-Other services should not directly access the User Service database.
+Other services should not directly query the User Service database.
 
 ---
 
 # 7. Catalog Service
 
-The Catalog Service manages ticket-bookable content.
+The Catalog Service manages bookable content.
 
-The platform supports multiple categories:
+Supported categories:
 
 ```text
 Movie
@@ -240,404 +257,153 @@ Sports Match
 Show
 ```
 
-## Responsibilities
+Responsibilities:
 
-* Event creation
 * Event information
-* Venue information
-* Show schedules
 * Movie information
 * Match information
+* Show schedules
+* Venue information
 * Seat-layout information
 
-Example relationship:
+Conceptually:
 
 ```text
-Event
-  |
-  └── Venue
-        |
-        └── Show
-              |
-              └── Seats
+Content
+   |
+   ▼
+Show
+   |
+   ▼
+Venue
+   |
+   ▼
+Seat Layout
 ```
-
-The exact database model will be finalized during the database-design phase.
 
 ---
 
 # 8. Booking Service
 
-The Booking Service is responsible for ticket reservations.
+The Booking Service owns the booking lifecycle.
 
-This is a critical service because booking involves concurrent users accessing the same resources.
+Responsibilities:
 
-## Responsibilities
+* Seat availability
+* Seat holds
+* Booking creation
+* Booking cancellation
+* Booking history
+* Booking state
+* Concurrency control
 
-* Check availability
-* Hold seats
-* Release seats
-* Create bookings
-* Cancel bookings
-* Maintain booking history
-* Prevent double booking
+The Booking Service is the service responsible for deciding whether a requested seat can actually be reserved.
 
 ---
 
-# 9. Concurrent Booking Problem
+# 9. Booking State Model
 
-Consider a show with:
+A conceptual booking state may be:
 
 ```text
-Seat A1
+PENDING
+   |
+   ├── SUCCESS
+   |
+   └── FAILED
 ```
+
+Seat state:
+
+```text
+AVAILABLE
+    |
+    ▼
+  HELD
+    |
+    ▼
+ BOOKED
+```
+
+Expired holds:
+
+```text
+HELD
+  |
+  | hold expires
+  ▼
+AVAILABLE
+```
+
+---
+
+# 10. Concurrent Booking
+
+Concurrency is a critical requirement.
 
 Suppose:
 
 ```text
+Show A
+Seat A10
+```
+
+Three users request the same seat simultaneously:
+
+```text
 User A ──┐
-         │
-User B ──┼──> Seat A1
-         │
+User B ──┼──> A10
 User C ──┘
 ```
 
-All three users request the same seat.
+The Booking Service must ensure that only one request successfully reserves the seat.
 
-The system must ensure:
+The system will use database transaction/concurrency-control mechanisms to make the seat allocation operation atomic.
 
-```text
-Only one successful allocation
-```
-
-The other requests must receive an appropriate response.
+The frontend cannot be trusted to enforce this rule.
 
 ---
 
-# 10. Seat State
+# 11. Seat Hold Architecture
 
-A seat can have states such as:
+Redis can be used for temporary seat holds.
 
-```text
-AVAILABLE
-    ↓
-HELD
-    ↓
-BOOKED
-```
-
-If a user selects a seat:
+Conceptually:
 
 ```text
-AVAILABLE → HELD
-```
-
-The seat is temporarily reserved.
-
-If payment/booking succeeds:
-
-```text
-HELD → BOOKED
-```
-
-If the hold expires:
-
-```text
-HELD → AVAILABLE
-```
-
-Redis can be used for temporary holds, while PostgreSQL remains the durable source of booking records.
-
----
-
-# 11. Concurrency Control
-
-The Booking Service must perform seat allocation atomically.
-
-The general process is:
-
-```text
-Booking Request
-      |
-      ▼
-Check seat
-      |
-      ▼
-Attempt atomic reservation
-      |
-      ├── Successful
-      │      |
-      │      ▼
-      │   Continue booking
-      │
-      └── Already reserved
-             |
-             ▼
-        Reject request
-```
-
-Database transactions and appropriate locking/atomic update mechanisms will be used to prevent inconsistent seat states.
-
-The exact implementation will be finalized during the booking-service development phase.
-
----
-
-# 12. Redis
-
-Redis provides fast in-memory storage.
-
-Tichboo uses Redis primarily for:
-
-### Rate limiting
-
-```text
-user + endpoint
+User selects seat
        |
        ▼
-Redis counter
-```
-
-### Temporary seat holds
-
-```text
-seat
- |
- └── temporary reservation
-```
-
-### Potential caching
-
-Frequently accessed information may later be cached.
-
-Redis should not replace PostgreSQL as the primary persistent database for business records.
-
----
-
-# 13. Dynamic Rate Limiting Architecture
-
-The rate limiter is designed to be configurable.
-
-Instead of hard-coding:
-
-```text
-100 requests/minute
-```
-
-the system can store policies such as:
-
-```text
-Plan       Endpoint       Limit
---------------------------------
-FREE       Search         X
-PREMIUM    Search         Y
-VIP        Search         Z
-```
-
-The actual numeric values will be configured during implementation.
-
----
-
-# 14. Rate-Limit Request Flow
-
-```text
-                  Request
-                     |
-                     ▼
-               API Gateway
-                     |
-                     ▼
-             Identify User
-                     |
-                     ▼
-              Identify Plan
-                     |
-                     ▼
-             Identify Endpoint
-                     |
-                     ▼
-          Load applicable policy
-                     |
-                     ▼
-                  Redis
-                     |
-            ┌────────┴────────┐
-            │                 │
-         Allowed            Exceeded
-            │                 │
-            ▼                 ▼
-      Backend Service       HTTP 429
-```
-
-HTTP `429 Too Many Requests` is returned when the configured request allowance has been exceeded.
-
----
-
-# 15. Why Dynamic Rate Limiting?
-
-The platform may have different traffic requirements for different operations.
-
-For example:
-
-```text
-Search API
-    ↓
-High request volume expected
-
-Booking API
-    ↓
-Sensitive operation
-
-Admin API
-    ↓
-Restricted operation
-```
-
-Therefore, a single global limit is not appropriate for every endpoint.
-
-Dynamic policies allow the administrator to change policies according to system requirements.
-
----
-
-# 16. Plan-Based Rate Limiting
-
-A user's subscription plan can be one input into rate-limit policy selection.
-
-Example:
-
-```text
-                 User
-                   |
-                   ▼
-               Plan = ?
-                   |
-       ┌───────────┼───────────┐
-       ▼           ▼           ▼
-     FREE       PREMIUM        VIP
-       |           |           |
-       ▼           ▼           ▼
-    Policy A    Policy B     Policy C
-```
-
-This does not mean the plan directly controls booking authorization.
-
-Rate limiting and business authorization are separate concerns.
-
----
-
-# 17. Admin-Controlled Policies
-
-The administrator can modify rate-limit configurations.
-
-Example:
-
-```text
-Admin Dashboard
-       |
-       ▼
-Policy Management API
-       |
-       ▼
-Policy Storage
-       |
-       ▼
-Gateway
-       |
-       ▼
-New policy applied
-```
-
-This allows policies to be changed without modifying and rebuilding the Gateway application.
-
----
-
-# 18. Payment Service
-
-The Payment Service handles payment-related operations.
-
-Responsibilities:
-
-* Payment initiation
-* Payment status
-* Transaction records
-* Payment confirmation
-* Payment failure handling
-
-During initial development, payment can be simulated.
-
-Later, a real payment provider can be integrated.
-
----
-
-# 19. Service Communication
-
-Two communication patterns can be used.
-
-## Synchronous communication
-
-REST APIs can be used when an immediate response is required.
-
-Example:
-
-```text
-Frontend
-   ↓
-Gateway
-   ↓
-Catalog Service
-   ↓
-Response
-```
-
-## Asynchronous communication
-
-Kafka or RabbitMQ can be introduced for events that do not require an immediate response.
-
-Example:
-
-```text
 Booking Service
-      |
-      ▼
-BookingCreated
-      |
-      ▼
-Message Broker
-      |
- ┌────┼────────────┐
- ▼    ▼            ▼
-Payment Analytics Notification
+       |
+       ▼
+Redis
+       |
+       ▼
+Temporary hold
+       |
+       ├── Payment/booking succeeds
+       │       ↓
+       │     BOOKED
+       │
+       └── Timeout
+               ↓
+           AVAILABLE
 ```
+
+The durable booking record remains in PostgreSQL.
 
 ---
 
-# 20. Message/Event Model
+# 12. Database Architecture
 
-Potential events:
-
-```text
-BookingCreated
-BookingCancelled
-PaymentCompleted
-PaymentFailed
-SeatHeld
-SeatReleased
-```
-
-Services can subscribe only to events relevant to them.
-
-This reduces direct coupling.
-
----
-
-# 21. Database Architecture
-
-The project follows the database-per-service concept.
+The architecture follows the database-per-service principle.
 
 ```text
 User Service
      |
      ▼
-User Database
+ User Database
 
 Catalog Service
      |
@@ -655,15 +421,160 @@ Payment Service
 Payment Database
 ```
 
-A service should not directly query another service's database.
+A service should not directly access another service's database.
 
-Communication between services should occur through APIs or events.
+Communication should happen through:
+
+* REST APIs
+* Events/messages
 
 ---
 
-# 22. Authentication Architecture
+# 13. PostgreSQL
 
-Authentication uses JWT.
+PostgreSQL is the primary persistent database technology.
+
+It stores durable business information such as:
+
+* Users
+* Events
+* Shows
+* Bookings
+* Payments
+* Venues
+
+The exact schema and relationships will be designed in Phase 2.
+
+---
+
+# 14. Redis
+
+Redis is used for fast-changing state.
+
+Primary use cases:
+
+### Rate Limiting
+
+```text
+User + Endpoint
+      |
+      ▼
+Redis counter
+```
+
+### Temporary Seat Holds
+
+```text
+Seat
+ |
+ └── Temporary hold
+```
+
+### Future Caching
+
+Frequently requested information can potentially be cached later.
+
+Redis is not intended to replace PostgreSQL for durable business records.
+
+---
+
+# 15. Dynamic Rate Limiting
+
+The rate limiter is one of the core architectural features of Tichboo.
+
+Instead of defining a single hard-coded limit:
+
+```text
+100 requests/minute
+```
+
+the system uses configurable policies.
+
+Conceptually:
+
+```text
+User
+  |
+  ▼
+Identify Plan
+  |
+  ▼
+Identify Endpoint
+  |
+  ▼
+Load Policy
+  |
+  ▼
+Redis
+  |
+  ├── Allowed
+  │      ↓
+  │   Backend
+  │
+  └── Exceeded
+         ↓
+       429
+```
+
+---
+
+# 16. Rate-Limit Policy
+
+A policy can conceptually contain:
+
+```text
+Policy
+-------------------------
+plan
+endpoint
+request_limit
+time_window
+enabled
+```
+
+For example:
+
+```text
+FREE
+PREMIUM
+VIP
+```
+
+may have different configured limits.
+
+The actual numeric values will be determined during implementation/testing.
+
+---
+
+# 17. Dynamic Policy Management
+
+The important distinction is:
+
+```text
+Static Rate Limiting
+       ↓
+Limit exists in application code
+```
+
+versus:
+
+```text
+Dynamic Rate Limiting
+       ↓
+Policy stored/configured externally
+       ↓
+Gateway reads current policy
+       ↓
+Policy can be changed
+```
+
+This allows administrators to modify traffic policies without rebuilding the Gateway.
+
+---
+
+# 18. Authentication Architecture
+
+Authentication uses Spring Security and JWT.
 
 General flow:
 
@@ -676,130 +587,199 @@ User Service
  |
  | Validate credentials
  ▼
-JWT generated
+JWT
  |
  ▼
 Client
  |
- | JWT
+ | Authorization header
  ▼
 API Gateway
  |
- | Validate JWT
+ | Validate token
  ▼
 Protected Service
 ```
 
-The token can contain claims such as:
+The JWT can contain claims required for authorization.
 
-```text
-userId
-role
-plan
-```
-
-Only non-sensitive authorization information should be included in JWT claims.
+Sensitive information should not be stored inside the token.
 
 ---
 
-# 23. Authorization
+# 19. Authorization Architecture
 
-Authentication answers:
+Authentication determines the identity of a user.
 
-> Who is this user?
-
-Authorization answers:
-
-> What is this user allowed to do?
+Authorization determines what the user is allowed to do.
 
 Example:
 
 ```text
-USER
- └── Browse / Book
+CUSTOMER
+ ├── Browse
+ ├── Search
+ ├── Book
+ └── View own bookings
 
 ADMIN
  ├── Browse
- ├── Book
+ ├── Manage users
  ├── Manage events
+ ├── Monitor bookings
  └── Manage rate-limit policies
 ```
 
-Authorization rules will be implemented using Spring Security.
+---
+
+# 20. Payment Service
+
+The Payment Service handles payment-related operations.
+
+Responsibilities:
+
+* Payment initiation
+* Payment processing state
+* Transaction records
+* Payment success/failure
+
+Initially, payment can be simulated.
+
+Later, an external payment provider can be integrated.
+
+The Payment Service should remain independent of the Booking Service.
+
+---
+
+# 21. Synchronous Communication
+
+REST APIs will be used when an immediate response is required.
+
+Example:
+
+```text
+Frontend
+   |
+   ▼
+Gateway
+   |
+   ▼
+Catalog Service
+   |
+   ▼
+Response
+```
+
+This is suitable for operations such as:
+
+* Searching events
+* Retrieving show information
+* Checking catalog information
+
+---
+
+# 22. Asynchronous Communication
+
+A message broker can be introduced for asynchronous workflows.
+
+Potential technologies:
+
+* Apache Kafka
+* RabbitMQ
+
+Conceptually:
+
+```text
+Booking Service
+       |
+       ▼
+BookingCreated
+       |
+       ▼
+Message Broker
+       |
+   ┌───┼──────────┐
+   ▼   ▼          ▼
+Payment Analytics Notification
+Service   Service    Service
+```
+
+The final messaging technology can be selected during implementation.
+
+---
+
+# 23. Event-Driven Architecture
+
+Potential domain events include:
+
+```text
+BookingCreated
+BookingCancelled
+PaymentCompleted
+PaymentFailed
+SeatHeld
+SeatReleased
+```
+
+Events allow services to react to changes without requiring direct synchronous communication for every operation.
 
 ---
 
 # 24. Monitoring Architecture
 
-Prometheus and Grafana will provide observability.
+The monitoring stack is:
 
 ```text
-Services
-   |
-   | Metrics
-   ▼
-Prometheus
-   |
-   ▼
-Grafana
+Microservices
+      |
+      | Metrics
+      ▼
+ Prometheus
+      |
+      ▼
+   Grafana
 ```
 
-Potential metrics:
+Metrics can include:
 
-```text
-HTTP requests
-Request latency
-HTTP errors
-Rate-limit rejections
-Booking attempts
-Successful bookings
-Failed bookings
-Service health
-```
+* Request count
+* Request latency
+* Error rate
+* HTTP status codes
+* Rate-limit rejections
+* Booking attempts
+* Successful bookings
+* Failed bookings
+* Service health
 
 ---
 
-# 25. Logging
+# 25. Logging Architecture
 
-Each service should produce structured logs.
+Each service should generate useful logs.
 
-Important information can include:
+Conceptual log information:
 
 ```text
 timestamp
 service
 request_id
 endpoint
+method
 status
 duration
 error
 ```
 
-Request IDs allow a request to be traced across services.
+The same request ID should be propagated where practical.
 
-Example:
-
-```text
-Client
-  |
-  | request-id: ABC123
-  ▼
-Gateway
-  |
-  | ABC123
-  ▼
-Booking Service
-  |
-  | ABC123
-  ▼
-Payment Service
-```
+This makes distributed debugging easier.
 
 ---
 
-# 26. Data Science / ML Architecture
+# 26. Data Science Architecture
 
-The ML layer is intentionally separated from the core transaction system.
+The ML component is intentionally separated from transactional services.
 
 ```text
 Booking Service
@@ -813,10 +793,11 @@ Analytics / ML Service
        ├── Demand Analysis
        ├── Traffic Analysis
        ├── User Behavior
-       └── Demand Forecasting
+       ├── Demand Forecasting
+       └── Recommendations
 ```
 
-The ML service can be implemented using:
+Planned technology:
 
 * Python
 * Pandas
@@ -824,98 +805,110 @@ The ML service can be implemented using:
 * Scikit-learn
 * FastAPI
 
-The ML service can expose predictions or analytics through REST APIs.
+The ML service should not directly modify core booking records.
 
 ---
 
-# 27. Why Python for ML?
+# 27. Frontend-to-Backend Request Flow
 
-The core backend uses Java/Spring Boot because the project is primarily a backend distributed-system project.
-
-Python is used separately for the data-science layer because the Python ecosystem provides libraries specifically designed for:
-
-* Data processing
-* Statistical analysis
-* Machine learning
-* Model development
-
-This keeps the transactional Java services separate from ML experimentation and model serving.
-
----
-
-# 28. Deployment Architecture
-
-Docker will be introduced after the application is functional.
-
-Conceptually:
+Example: user wants to book a seat.
 
 ```text
-Docker Environment
-
-┌───────────────────────────────────────┐
-│                                       │
-│ API Gateway                           │
-│ User Service                          │
-│ Catalog Service                       │
-│ Booking Service                       │
-│ Payment Service                       │
-│ Redis                                 │
-│ PostgreSQL                            │
-│ Kafka/RabbitMQ                        │
-│ Prometheus                            │
-│ Grafana                               │
-│                                       │
-└───────────────────────────────────────┘
+1. User selects a show
+          |
+          ▼
+2. Frontend sends request
+          |
+          ▼
+3. API Gateway
+          |
+          ├── JWT validation
+          ├── Rate-limit check
+          └── Request routing
+                    |
+                    ▼
+4. Booking Service
+          |
+          ▼
+5. Check seat state
+          |
+          ▼
+6. Reserve/hold seat
+          |
+          ▼
+7. Payment workflow
+          |
+          ▼
+8. Confirm booking
+          |
+          ▼
+9. Return response
 ```
 
-Docker Compose can initially be used to run the local distributed environment.
+---
+
+# 28. Why the Gateway Does Not Handle Booking Logic
+
+The Gateway is responsible for **traffic and access management**.
+
+The Booking Service is responsible for **business logic**.
+
+Therefore:
+
+```text
+Gateway
+→ "Is this request allowed to enter?"
+
+Booking Service
+→ "Can this seat actually be booked?"
+```
+
+This separation is important for maintaining clear service boundaries.
 
 ---
 
 # 29. Scalability
 
-Microservices allow individual services to scale independently.
+The architecture supports independent service scaling.
 
-For example, during a popular ticket release:
+For example:
 
 ```text
-              API Gateway
-                  |
-        ┌─────────┼─────────┐
-        ▼         ▼         ▼
-    Booking   Booking   Booking
-    Instance  Instance  Instance
+                API Gateway
+                     |
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+      Booking     Booking     Booking
+      Instance    Instance    Instance
 ```
 
-The Booking Service can have multiple instances without requiring the entire application to be replicated as one large monolith.
+Multiple instances of a service can process requests when traffic increases.
 
-Redis and PostgreSQL must also be designed appropriately as the system scales.
+The infrastructure components such as Redis and PostgreSQL must also be appropriately configured as the system scales.
 
 ---
 
 # 30. Fault Isolation
 
-A major advantage of the architecture is service isolation.
+Microservices provide boundaries between application components.
 
 For example:
 
 ```text
 Catalog Service
-      ↓
-Available
+       ↓
+     Working
 
 Booking Service
-      ↓
-Available
+       ↓
+     Working
 
 Payment Service
-      ↓
-Temporarily unavailable
+       ↓
+ Temporarily unavailable
 ```
 
-The system can handle service failures according to the business workflow rather than causing every component to fail together.
-
-Failure-handling strategies can later include:
+The system can use mechanisms such as:
 
 * Timeouts
 * Retries
@@ -923,40 +916,72 @@ Failure-handling strategies can later include:
 * Idempotency
 * Dead-letter queues
 
+as the project evolves.
+
 ---
 
-# 31. Security Considerations
+# 31. Security Architecture
 
-The system should follow basic security practices:
-
-* Password hashing
-* HTTPS in deployment
-* JWT validation
-* Role-based authorization
-* Input validation
-* API rate limiting
-* Secure environment variables
-* No secrets committed to Git
-* Database access restrictions
-* Proper error handling
-
-Sensitive configuration should be stored outside source code.
-
-For example:
+Security controls include:
 
 ```text
-.env
-application-local.yml
-environment variables
+HTTPS
+  ↓
+API Gateway
+  ↓
+JWT Authentication
+  ↓
+Authorization
+  ↓
+Rate Limiting
+  ↓
+Input Validation
+  ↓
+Microservices
 ```
 
-These should not be committed to GitHub when they contain secrets.
+Additional practices:
+
+* Password hashing
+* Secure secrets
+* Environment variables
+* Database access controls
+* Safe error responses
+* No sensitive information in logs
 
 ---
 
-# 32. Repository Architecture
+# 32. Deployment Architecture
 
-The repository is organized into documentation, frontend, services, ML, and infrastructure.
+Docker will be introduced after the core services are working.
+
+A local Docker environment may contain:
+
+```text
+┌─────────────────────────────────────┐
+│             Docker                  │
+│                                     │
+│ API Gateway                         │
+│ User Service                        │
+│ Catalog Service                     │
+│ Booking Service                     │
+│ Payment Service                     │
+│ PostgreSQL                          │
+│ Redis                               │
+│ Kafka/RabbitMQ                      │
+│ Prometheus                          │
+│ Grafana                             │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+Docker Compose can initially be used for local orchestration.
+
+---
+
+# 33. Repository Architecture
+
+The target repository structure is:
 
 ```text
 tichboo/
@@ -966,8 +991,8 @@ tichboo/
 ├── docs/
 │   ├── requirements.md
 │   ├── architecture.md
-│   ├── api-contracts.md
-│   └── database-design.md
+│   ├── database-design.md
+│   └── api-contracts.md
 │
 ├── frontend/
 │
@@ -988,184 +1013,105 @@ tichboo/
 └── docker-compose.yml
 ```
 
-This structure is a target architecture. The folders will be created progressively as development moves through each phase.
+This is the target structure, not the structure that must exist immediately.
+
+Services and directories will be created progressively.
 
 ---
 
-# 33. Request Lifecycle Example
+# 34. Development Sequence
 
-Consider a user booking seat A10 for a movie.
-
-```text
-1. User logs into Tichboo
-          |
-          ▼
-2. User receives JWT
-          |
-          ▼
-3. User requests movie/show information
-          |
-          ▼
-4. API Gateway
-          |
-          ▼
-5. Catalog Service
-          |
-          ▼
-6. User selects Seat A10
-          |
-          ▼
-7. Booking request
-          |
-          ▼
-8. API Gateway
-          |
-          ├── Authenticate
-          ├── Apply rate-limit policy
-          └── Route request
-                    |
-                    ▼
-             Booking Service
-                    |
-                    ▼
-              Check Seat A10
-                    |
-                    ▼
-             Reserve/Hold Seat
-                    |
-                    ▼
-              Payment Process
-                    |
-                    ▼
-             Booking Confirmed
-                    |
-                    ▼
-              Seat = BOOKED
-```
-
-The important architectural boundary is:
-
-```text
-Gateway controls access to the system.
-
-Booking Service controls seat allocation.
-```
-
-The Gateway should not decide whether a seat is available.
-
----
-
-# 34. Development Strategy
-
-The project will not be built as all microservices simultaneously.
-
-Development will proceed incrementally.
+The architecture will be implemented progressively:
 
 ```text
 Requirements
-     ↓
+      ↓
 Architecture
-     ↓
+      ↓
 Database Design
-     ↓
+      ↓
 API Contracts
-     ↓
-Basic Backend
-     ↓
+      ↓
+Frontend
+      ↓
 Authentication
-     ↓
-Frontend Integration
-     ↓
+      ↓
 Microservices
-     ↓
+      ↓
 API Gateway
-     ↓
-Redis Rate Limiting
-     ↓
-Dynamic Policies
-     ↓
-Concurrency
-     ↓
+      ↓
+Booking
+      ↓
+Redis
+      ↓
+Dynamic Rate Limiting
+      ↓
 Admin
-     ↓
+      ↓
 Monitoring
-     ↓
+      ↓
 ML
-     ↓
-Docker / Deployment
+      ↓
+Docker
+      ↓
+Deployment
 ```
 
-This approach makes debugging easier and allows each architectural concept to be understood before adding the next layer.
+Each phase should be functional before introducing the next major architectural component.
 
 ---
 
-# 35. Architectural Principles
+# 35. Architectural Boundaries
 
-The following principles guide the implementation:
+The following boundaries should remain clear:
 
-### Separation of concerns
-
-Each service should have a clearly defined responsibility.
-
-### Loose coupling
-
-Services should avoid unnecessary direct dependencies.
-
-### High cohesion
-
-Related functionality should remain within the same service.
-
-### Database ownership
-
-Services own their data.
-
-### Stateless API Gateway
-
-The Gateway should avoid storing user session state.
-
-### Centralized traffic management
-
-Rate limiting is handled at the Gateway.
-
-### Business ownership
-
-Business operations remain inside their respective services.
-
-### Concurrency safety
-
-Booking operations must be atomic and consistent.
-
-### Observability
-
-Services should expose logs, metrics, and health information.
-
-### Independent scalability
-
-Services should be capable of scaling independently.
+| Component       | Primary Responsibility                      |
+| --------------- | ------------------------------------------- |
+| Frontend        | User interaction                            |
+| API Gateway     | Routing, access control, traffic management |
+| User Service    | User/account management                     |
+| Catalog Service | Movies, events, shows, venues               |
+| Booking Service | Seats and bookings                          |
+| Payment Service | Payment workflow                            |
+| Redis           | Fast temporary state                        |
+| PostgreSQL      | Persistent business data                    |
+| Message Broker  | Asynchronous events                         |
+| Prometheus      | Metrics collection                          |
+| Grafana         | Metrics visualization                       |
+| ML Service      | Analytics and machine learning              |
 
 ---
 
-# 36. Current Implementation Status
+# 36. Current Status
 
-Current phase:
+Current project phase:
 
-```text
-PHASE 1
-Requirements & Architecture
-```
+**Phase 1 — Requirements & Architecture**
 
 Completed:
 
-* GitHub repository
-* Local Git repository
-* README
-* Initial architecture documentation
+* Project scope
+* System requirements
+* High-level architecture
+* Service boundaries
+* Technology direction
+* Development sequence
+* GitHub repository setup
 
 Next phase:
 
-```text
-PHASE 2
-Database Design + API Contracts
-```
+**Phase 2 — Database Design + API Contracts**
 
-The next phase will define the actual database entities, relationships, service boundaries, REST endpoints, request bodies, response bodies, and API responsibilities before implementation begins.
+Phase 2 will define:
+
+1. Database entities
+2. Tables
+3. Primary keys
+4. Foreign keys
+5. Relationships
+6. Service database ownership
+7. REST endpoints
+8. HTTP methods
+9. Request bodies
+10. Response bodies
+11. Authentication requirements for each endpoint
