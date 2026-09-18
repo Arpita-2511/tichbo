@@ -1,0 +1,6 @@
+.env
+*.env
+target/
+node_modules/
+.idea/
+*.log
