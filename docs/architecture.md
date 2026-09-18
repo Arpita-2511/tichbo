@@ -1115,3 +1115,14 @@ Phase 2 will define:
 9. Request bodies
 10. Response bodies
 11. Authentication requirements for each endpoint
+
+
+## High-Level Data Relationships
+
+- A Plan can be associated with many Users.
+- A User can create many Bookings.
+- A Venue can contain many Seats.
+- A Venue can host many Shows.
+- A Booking can contain multiple Seats through BookingSeat.
+- A Show represents a scheduled occurrence that can be booked.
+- A Plan can have multiple RateLimitPolicies.

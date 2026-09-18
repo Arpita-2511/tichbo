@@ -798,3 +798,5 @@ Completed:
 Next phase:
 
 **Phase 2 — Database Design + API Contracts**
+## Core Data Entities
+
