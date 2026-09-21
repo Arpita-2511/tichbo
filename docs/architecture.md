@@ -1172,3 +1172,51 @@ policies required by the platform.
 - burst capacity
 - enabled
 
+### Movie
+
+- id
+- title
+- description
+- duration
+- language
+- genre
+- release_date
+
+
+### Event
+
+- id
+- name
+- description
+- event_type
+- date
+- venue
+
+
+### Match
+
+- id
+- sport
+- team_a
+- team_b
+- date
+- venue
+
+
+### Venue
+
+- id
+- name
+- address
+- city
+
+
+### Show
+
+- id
+- movie
+- event
+- match
+- venue
+- start_time
+- end_time
