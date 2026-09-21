@@ -1116,6 +1116,26 @@ Phase 2 will define:
 10. Response bodies
 11. Authentication requirements for each endpoint
 
+## Core Data Entities
+
+The application uses the following core business entities:
+
+- User 
+- Plan
+- Movie
+- Event
+- Match
+- Venue
+- Seat
+- Show
+- Booking
+- BookingSeat
+- RateLimitPolicy
+
+These entities represent the users, ticketable content,
+venues, scheduled shows, bookings, and gateway traffic
+policies required by the platform.
+
 
 ## High-Level Data Relationships
 
@@ -1126,3 +1146,29 @@ Phase 2 will define:
 - A Booking can contain multiple Seats through BookingSeat.
 - A Show represents a scheduled occurrence that can be booked.
 - A Plan can have multiple RateLimitPolicies.
+
+## Initial Entity Attributes
+
+### User 
+-id 
+-name 
+-email
+-role
+-plan
+-created_at
+
+### plans
+- id
+- name
+- price
+- description
+
+
+### Rate_limit_policies
+- id
+- plan
+- endpoint
+- requests_per_second
+- burst capacity
+- enabled
+
