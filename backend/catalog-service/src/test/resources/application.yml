@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    # In-memory database for tests only, so `mvn test` never requires a
+    # live PostgreSQL connection. Takes precedence over
+    # src/main/resources/application.yml on the test classpath.
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: none

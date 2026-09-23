@@ -4,3 +4,9 @@ target/
 node_modules/
 .idea/
 *.log
+
+# Java / Maven (backend/*)
+*.class
+.classpath
+.project
+.settings/

@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: booking-service
+  datasource:
+    # Points at the existing eventtick_db for now. docs/architecture.md
+    # §17 describes database-per-service as a future target, not required
+    # for the current local setup. Never commit real credentials — these
+    # fall back to environment variables with no hardcoded password.
+    url: jdbc:postgresql://localhost:5432/eventtick_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:}
+  jpa:
+    # The schema is fully owned by database/migrations/ (see
+    # database/README.md). Hibernate must never auto-generate or alter it.
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+
+server:
+  port: 8083

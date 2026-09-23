@@ -844,10 +844,21 @@ For the initial local implementation, the project may use one PostgreSQL server 
 The architectural ownership boundary remains:
 
 ```text
-User Service     → owns user data
-Catalog Service  → owns catalog data
-Booking Service  → owns booking data
+User Service     → users
+
+Catalog Service  → content, venues, seats, shows
+
+Booking Service  → show_seats, bookings, booking_seats
 ```
+
+`show_seats` (show-specific seat availability and pricing) belongs to
+Booking Service, not Catalog Service: it is the table the booking
+concurrency-control mechanism (§15) locks and updates directly, so it is
+part of the booking domain even though it references a physical seat
+(`seats`, owned by Catalog Service) and a show (`shows`, also owned by
+Catalog Service). Catalog Service owns the permanent physical seat layout
+(`seats`) and show schedule (`shows`); Booking Service owns whether a given
+seat is available/held/booked for a given show.
 
 Physical database separation can be introduced later if required.
 
