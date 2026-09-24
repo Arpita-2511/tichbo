@@ -1,9 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Eventtick API Service Layer
 //
-// All functions currently return mock data with simulated async delay.
-// To connect to the real backend, replace the mock implementations with
-// actual fetch/axios calls to the API Gateway endpoints.
+// Authentication (login / signup / logout / getCurrentUser) is REAL: it
+// talks to user-service over HTTP (see "Auth" below). Everything else
+// still returns mock data with simulated async delay, until its own
+// backend integration phase.
 //
 // All frontend components should ONLY call functions from this file,
 // never fetch data directly.
@@ -16,7 +17,7 @@
 import type {
   Content, Venue, Show, Booking, User, Plan,
   AdminStats, SearchResult, EventFilters, ContentType,
-  SeatSection
+  SeatSection, SubscriptionPlan
 } from '../types';
 
 import {
@@ -167,27 +168,159 @@ export async function cancelBooking(_id: string): Promise<boolean> {
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
+// Talks to user-service directly. There is no API Gateway yet; once there is,
+// this collapses into BASE_URL. Override with VITE_USER_SERVICE_URL.
+const USER_SERVICE_URL = import.meta.env.VITE_USER_SERVICE_URL || 'http://localhost:8081';
+
+// The JWT lives in localStorage — simple and fine for a local project. The
+// trade-off: any script running on the page can read it (XSS). Passwords are
+// never stored.
+const TOKEN_KEY = 'eventtick.accessToken';
+
+function getStoredToken(): string | null {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function storeToken(token: string): void {
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage blocked: stay logged in for this page load only */ }
+}
+function clearToken(): void {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* nothing to clear */ }
+}
+
+/**
+ * Thrown for any failed backend call. `message` is always safe to show to
+ * the user: it is either the backend's own (deliberately generic) error
+ * message for a 4xx, or a fixed message for network/server failures — never
+ * a stack trace, and never anything containing a token or password.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// Shape of the backend's ErrorResponse: { status, error, message, timestamp }
+interface BackendError { error?: string; message?: string }
+
+async function request<T>(
+  path: string,
+  options: { method?: 'GET' | 'POST'; body?: unknown; auth?: boolean } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.auth) {
+    const token = getStoredToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${USER_SERVICE_URL}${path}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, 'Cannot reach the server. Check your connection and try again.', 'NETWORK_ERROR');
+  }
+
+  if (!response.ok) {
+    const err: BackendError | null = await response.json().catch(() => null);
+    // 4xx: the backend's message is written to be user-safe (e.g. "Invalid
+    // email or password."). 5xx: never show server detail.
+    const message = response.status < 500 && err?.message
+      ? err.message
+      : response.status >= 500
+        ? 'Something went wrong on our side. Please try again later.'
+        : `Request failed (${response.status}).`;
+    throw new ApiError(response.status, message, err?.error);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+// The backend's user shape (UserResponse). Only login and /me responses are
+// mapped: registration's response has null createdAt/updatedAt and isn't used.
+interface BackendUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'CUSTOMER' | 'ADMIN';
+  planId: string;
+  planName: string;
+  createdAt: string;
+}
+
+const KNOWN_PLANS: readonly SubscriptionPlan[] = ['FREE', 'PRO', 'PREMIUM', 'VIP'];
+
+// Backend plan names are "Free" / "Pro" / "Premium"; the frontend's
+// SubscriptionPlan is upper case. Display only — never used for access control.
+function toSubscriptionPlan(planName: string): SubscriptionPlan {
+  const upper = planName.toUpperCase() as SubscriptionPlan;
+  return KNOWN_PLANS.includes(upper) ? upper : 'FREE';
+}
+
+function toUser(b: BackendUser): User {
+  return {
+    id: b.id,
+    name: b.name,
+    email: b.email,
+    plan: toSubscriptionPlan(b.planName),
+    createdAt: b.createdAt,
+  };
+}
+
 export interface LoginInput { email: string; password: string; }
-export interface SignupInput { name: string; email: string; password: string; phone?: string; }
+export interface SignupInput { name: string; email: string; password: string; }
 
 export async function login(data: LoginInput): Promise<User> {
-  await delay(700);
-  // Mock: any credentials succeed
-  return { ...mockUser, email: data.email };
+  const res = await request<{ accessToken: string; user: BackendUser }>(
+    '/api/auth/login', { method: 'POST', body: data });
+  storeToken(res.accessToken);
+  return toUser(res.user);
 }
 
+/**
+ * Registration returns no token, so a successful signup is followed by an
+ * immediate login with the same credentials — the caller gets a logged-in
+ * user, same as `login`.
+ */
 export async function signup(data: SignupInput): Promise<User> {
-  await delay(800);
-  return { ...mockUser, name: data.name, email: data.email };
+  await request('/api/auth/register', {
+    method: 'POST',
+    body: { name: data.name, email: data.email, password: data.password },
+  });
+  try {
+    return await login({ email: data.email, password: data.password });
+  } catch {
+    throw new ApiError(0, 'Your account was created, but signing in failed. Please log in.', 'LOGIN_AFTER_SIGNUP_FAILED');
+  }
 }
 
+/** Stateless JWT: there is no backend logout endpoint — dropping the token is the logout. */
 export async function logout(): Promise<void> {
-  await delay(200);
+  clearToken();
 }
 
+/**
+ * Restores the session from a stored token. Never throws: no token, an
+ * expired/invalid token (401 — cleared so it isn't retried forever), or an
+ * unreachable server all resolve to `null`. A network failure deliberately
+ * keeps the token, so a temporarily-down backend doesn't log the user out.
+ */
 export async function getCurrentUser(): Promise<User | null> {
-  await delay(300);
-  return null; // Not logged in by default
+  if (!getStoredToken()) return null;
+  try {
+    return toUser(await request<BackendUser>('/api/users/me', { auth: true }));
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) clearToken();
+    return null;
+  }
 }
 
 // ─── Plans ───────────────────────────────────────────────────────────────────

@@ -1057,7 +1057,9 @@ Completed, beyond the original Phase 1 scope below:
   role-based authority (`CUSTOMER`/`ADMIN`), and an authenticated
   `/api/users/me`. See `docs/api-contracts.md` for the endpoint contract.
   Refresh tokens are explicitly deferred (see that doc for why).
-* Eventtick frontend prototype (mock data; not yet wired to any backend).
+* Eventtick frontend prototype. Authentication (signup, login, session
+  restore, logout) is now wired to the real User Service; everything else
+  in the frontend still uses mock data.
 
 This happened in a different order than the roadmap in §24 originally
 laid out (Catalog/Booking were built before Authentication, not after) —
@@ -1083,7 +1085,5 @@ The requirements have now been generalized from a movie-focused platform to a mu
 
 ## Next Phase
 
-Frontend ↔ Authentication integration (wiring the existing Eventtick
-frontend to real `POST /api/auth/register`, `POST /api/auth/login`, and
-`GET /api/users/me` calls instead of its mock API layer), followed by the
-API Gateway.
+The API Gateway. (Frontend ↔ Authentication integration is done — see
+above.)

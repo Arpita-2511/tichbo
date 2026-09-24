@@ -29,3 +29,10 @@ jwt:
   issuer: ${JWT_ISSUER:eventtick-user-service}
   audience: ${JWT_AUDIENCE:eventtick-clients}
   expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
+
+# Phase 6 (Frontend <-> Authentication). Browser origins allowed to call this
+# service, comma-separated. Defaults to the Vite dev server. Set
+# CORS_ALLOWED_ORIGINS if the frontend runs elsewhere (e.g. Vite falls back
+# to 5174 when 5173 is busy). Never use "*".
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}

@@ -42,7 +42,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   useEffect(() => {
-    // In production, this would validate the stored JWT token with the API Gateway
+    // Restores the session after a page load: getCurrentUser() checks for a
+    // stored JWT and, if there is one, validates it via GET /api/users/me.
+    // No token, or a rejected one, resolves to null (logged out).
     getCurrentUser().then(u => setUser(u));
   }, []);
 

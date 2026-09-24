@@ -7,7 +7,7 @@ import { useApp } from '../context/AppContext';
 export default function Signup() {
   const { setUser } = useApp();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: '', email: '', phone: '', password: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -26,11 +26,10 @@ export default function Signup() {
         name: form.name.trim(),
         email: form.email.trim(),
         password: form.password,
-        phone: form.phone.trim() || undefined,
       }));
       navigate('/');
-    } catch {
-      setError('Sign up failed. Please try again.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign up failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -49,7 +48,6 @@ export default function Signup() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <input className="input-field" placeholder="Full name" value={form.name} onChange={update('name')} autoComplete="name" />
           <input type="email" className="input-field" placeholder="Email" value={form.email} onChange={update('email')} autoComplete="email" />
-          <input type="tel" className="input-field" placeholder="Phone (optional)" value={form.phone} onChange={update('phone')} autoComplete="tel" />
           <input type="password" className="input-field" placeholder="Password (min 8 characters)" value={form.password} onChange={update('password')} autoComplete="new-password" />
           {error && <p className="text-error text-sm">{error}</p>}
           <button type="submit" disabled={loading} className="btn-primary w-full disabled:opacity-60">

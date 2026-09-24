@@ -127,6 +127,31 @@ Never returned: `password`, `passwordHash`, or any other internal field.
 
 ---
 
+## CORS (browser clients)
+
+Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) can call `user-service` (`http://localhost:8081`) from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent.
+
+- Allowed origins come from `cors.allowed-origins` (env: `CORS_ALLOWED_ORIGINS`, comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`). Never `*`. If Vite falls back to another port (e.g. 5174), set the variable to match.
+- Only `GET`, `POST`, `OPTIONS`; only the `Authorization` and `Content-Type` request headers; no credentials/cookies (auth is the `Authorization: Bearer` header).
+- Applies to `/api/**`. Error responses (e.g. 401) carry the CORS headers too, so the browser lets the frontend read the error body.
+- An origin not on the list gets `403` on preflight.
+
+Once an API Gateway fronts these services, CORS should be configured there instead of per service.
+
+---
+
+## Frontend integration (Phase 6)
+
+`eventtick/src/services/api.ts` calls these endpoints directly (`VITE_USER_SERVICE_URL`, default `http://localhost:8081`):
+
+- **Signup:** `POST /api/auth/register`, then an automatic `POST /api/auth/login` with the same credentials (registration returns no token). Only `name`, `email`, `password` are sent — there is no `phone` field in the backend contract.
+- **Login:** the returned `accessToken` is kept in `localStorage` (`eventtick.accessToken`). Passwords are never stored.
+- **Session restore on page load:** `GET /api/users/me` with the stored token. A `401` clears the token; a network failure keeps it.
+- **Logout:** removes the token locally — there is no logout endpoint (stateless JWT).
+- **Plan display:** the backend's `planName` (`Free` / `Pro` / `Premium`) is upper-cased into the frontend's `SubscriptionPlan`. Display only, never used for access control.
+
+---
+
 ## JWT structure
 
 Issued by `user-service`, HMAC-SHA256 signed. Claims:

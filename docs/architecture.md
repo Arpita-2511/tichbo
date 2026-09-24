@@ -1930,7 +1930,9 @@ Completed, beyond the original Phase 1 scope below — see
   authenticated `GET /api/users/me`. Refresh tokens (§7's "refresh-token
   management") are explicitly deferred — not yet implemented; access-token
   authentication alone is the complete, tested increment for now.
-* Eventtick frontend prototype (§4), currently on mock data only.
+* Eventtick frontend prototype (§4). Its authentication (signup, login,
+  session restore, logout) now calls the User Service directly over HTTP
+  (no Gateway in between yet); everything else is still mock data.
 
 The API Gateway (§5–§6) — the project's stated primary engineering
 focus — has **not** been implemented yet. Everything above was built
@@ -1955,7 +1957,7 @@ The architecture has now been generalized from a movie-specific application to a
 
 ## Next Phase
 
-Frontend ↔ Authentication integration, then the API Gateway (§5–§6):
+The API Gateway (§5–§6):
 request routing to the three services, JWT validation at the edge, and
 eventually dynamic rate limiting backed by Redis (§19–§22). None of that
 exists yet — the Gateway remains the largest unbuilt piece of the

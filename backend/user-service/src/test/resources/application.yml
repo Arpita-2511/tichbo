@@ -35,3 +35,8 @@ jwt:
   issuer: eventtick-user-service
   audience: eventtick-clients
   expiration-minutes: 60
+
+# Repeated here for the same reason as jwt.* above: this file replaces the
+# main application.yml on the test classpath rather than merging with it.
+cors:
+  allowed-origins: http://localhost:5173

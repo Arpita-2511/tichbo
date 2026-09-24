@@ -23,8 +23,8 @@ export default function Login() {
     try {
       setUser(await login({ email: email.trim(), password }));
       navigate('/');
-    } catch {
-      setError('Login failed. Please try again.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
     } finally {
       setLoading(false);
     }

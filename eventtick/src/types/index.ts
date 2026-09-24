@@ -11,7 +11,9 @@ export type SeatStatus = 'AVAILABLE' | 'SELECTED' | 'BOOKED' | 'UNAVAILABLE';
 
 export type SeatCategory = 'VIP' | 'PREMIUM' | 'REGULAR';
 
-export type SubscriptionPlan = 'FREE' | 'PREMIUM' | 'VIP';
+// 'PRO' is a real plan in the backend's seed data (Free / Pro / Premium);
+// 'VIP' only exists in the mock plan list and is kept until Plans is wired up.
+export type SubscriptionPlan = 'FREE' | 'PRO' | 'PREMIUM' | 'VIP';
 
 // ─── Content / Event ─────────────────────────────────────────────────────────
 
