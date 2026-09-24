@@ -130,6 +130,45 @@ Never returned: `password`, `passwordHash`, or any other internal field.
 
 ---
 
+## `GET /api/admin/users`
+
+Phase 13.4 — the first admin operation. A paginated list of all users, for the Admin Dashboard's user-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-37).
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — this service performs no role check of its own for this endpoint, the same "authorize once, at the edge" boundary every other admin-only path in this project uses. Called directly against `user-service` (bypassing the Gateway), any authenticated user — any role — can reach it; only requests through the Gateway are actually restricted to `ADMIN`.
+
+**Request body:** none.
+
+**Pagination — standard Spring `Pageable` query parameters:**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `page` | `0` | Zero-indexed page number |
+| `size` | `20` | Users per page |
+| `sort` | `createdAt,desc` | Newest first; overridable, e.g. `?sort=name,asc` |
+
+**Success response — `200 OK`:** a Spring `Page<UserResponse>` — `content` is a list of the same `UserResponse` shape as registration/`/me` (`id`, `name`, `email`, `role`, `planId`, `planName`, `createdAt`, `updatedAt` — never `password`/`passwordHash`), plus standard pagination metadata:
+
+```json
+{
+  "content": [
+    { "id": "...", "name": "Ada Lovelace", "email": "ada@example.com", "role": "CUSTOMER",
+      "planId": "1111...", "planName": "Free", "createdAt": "...", "updatedAt": "..." }
+  ],
+  "totalElements": 1,
+  "totalPages": 1,
+  "number": 0,
+  "size": 20
+}
+```
+
+No search or filtering yet — only pagination/sorting. No single-user admin lookup (`GET /api/admin/users/{id}`) yet — list only.
+
+**Error responses:** `401 UNAUTHENTICATED` (missing/malformed/expired/invalid-signature token, from this service); `403 FORBIDDEN` (authenticated but not `ADMIN` — from the **Gateway**, not this service, since the check happens there; see above).
+
+---
+
 ## CORS (browser clients)
 
 Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.
