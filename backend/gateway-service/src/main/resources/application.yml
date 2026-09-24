@@ -22,6 +22,11 @@ spring:
             allowed-headers:
               - Authorization
               - Content-Type
+            # Phase 7.4: lets browser JS read the request id on a response
+            # (e.g. to show it next to an error). Read-only; it does not let
+            # a page *send* extra headers, so allowed-headers is unchanged.
+            exposed-headers:
+              - X-Request-ID
             allow-credentials: false
             max-age: 3600
 

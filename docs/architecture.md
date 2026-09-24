@@ -1936,8 +1936,9 @@ Completed, beyond the original Phase 1 scope below — see
 
 The API Gateway (§5–§6) — the project's stated primary engineering
 focus — is partly built: **basic path-based routing** to the three
-services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2) and
-**JWT authentication at the edge** (Phase 7.3) are implemented in
+services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2),
+**JWT authentication at the edge** (Phase 7.3) and **request correlation
+ids with controlled error responses** (Phase 7.4) are implemented in
 `backend/gateway-service`, and the frontend's authentication now goes
 through it.
 
@@ -1953,8 +1954,21 @@ This is authentication only: the gateway does not decide who may do what.
 Authorization policy (roles, ownership) stays service-specific, and for now
 `/api/catalog/**` and `/api/bookings/**` simply require *a* valid token.
 The `role` and `plan` claims are available in the gateway's authentication
-context for later phases. There is still no rate limiting or dynamic rate
-limiting, and the mock-data parts of the frontend don't use the gateway yet.
+context for later phases.
+
+How request correlation and error handling work (Phase 7.4): every request
+through the gateway carries an `X-Request-ID` header — the caller's own value
+if it supplied one and it looks safe, otherwise a generated random UUID —
+forwarded to the upstream service and echoed on the response, including on
+the gateway's own 401/403/404/5xx responses. Every error the gateway
+generates itself (not one produced by a backend service) uses one JSON shape
+— status, a fixed error code, a fixed human-readable message, the request id,
+a timestamp — and never includes a stack trace, an exception's class or
+message, a JWT's contents, the signing secret, or an internal host/path.
+Request logging is limited to the id, method, path, status and duration;
+the query string, headers, `Authorization`, JWTs and passwords are never
+logged. There is still no rate limiting or dynamic rate limiting, and the
+mock-data parts of the frontend don't use the gateway yet.
 
 Original Phase 1 — Requirements & Architecture — completed:
 

@@ -1,9 +1,10 @@
 package com.eventtick.gateway.config;
 
+import com.eventtick.gateway.exception.GatewayErrorWriter;
 import com.eventtick.gateway.security.GatewayJwtAuthenticationConverter;
 import com.eventtick.gateway.security.GatewayJwtDecoder;
+import com.eventtick.gateway.security.JsonAccessDeniedHandler;
 import com.eventtick.gateway.security.JsonAuthenticationEntryPoint;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.config.GlobalCorsProperties;
 import org.springframework.context.annotation.Bean;
@@ -96,8 +97,9 @@ public class GatewaySecurityConfig {
     @Bean
     @Order(2)
     public SecurityWebFilterChain protectedEndpoints(ServerHttpSecurity http, CorsConfigurationSource cors,
-                                                     ReactiveJwtDecoder jwtDecoder, ObjectMapper objectMapper) {
-        JsonAuthenticationEntryPoint unauthorized = new JsonAuthenticationEntryPoint(objectMapper);
+                                                     ReactiveJwtDecoder jwtDecoder, GatewayErrorWriter errors) {
+        JsonAuthenticationEntryPoint unauthorized = new JsonAuthenticationEntryPoint(errors);
+        JsonAccessDeniedHandler forbidden = new JsonAccessDeniedHandler(errors);
         return http
                 .cors(c -> c.configurationSource(cors))
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
@@ -107,10 +109,13 @@ public class GatewaySecurityConfig {
                 .authorizeExchange(exchanges -> exchanges.anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .authenticationEntryPoint(unauthorized)
+                        .accessDeniedHandler(forbidden)
                         .jwt(jwt -> jwt
                                 .jwtDecoder(jwtDecoder)
                                 .jwtAuthenticationConverter(new GatewayJwtAuthenticationConverter())))
-                .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint(unauthorized))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(unauthorized)
+                        .accessDeniedHandler(forbidden))
                 .build();
     }
 }

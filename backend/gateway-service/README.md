@@ -18,6 +18,7 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
 - **Dynamic rate limiting** — Redis-backed, per user/plan/route-group
   token buckets (FR-26–FR-32).
 - **Request ID generation/propagation** and **structured request logging**.
+  **Implemented (Phase 7.4)** — see "Current status".
 - **Upstream timeouts** so a slow/unavailable service can't hang requests
   indefinitely.
 
@@ -81,8 +82,39 @@ wrongly-signed, expired, wrong-issuer or wrong-audience token.
 Direct access to the service ports (8081–8083) is still unauthenticated at
 the network level; only traffic through the gateway is checked here.
 
-Not implemented yet: rate limiting (Redis), request IDs, logging filters,
-and timeouts. Only `GET`/`POST` are allowed
+**Phase 7.4 — request correlation id and controlled error responses.**
+
+- **`X-Request-ID`:** every request gets one. If the request already carries
+  the header with an acceptable value (letters, digits, `. _ : -`, 1–128
+  characters — enough for a UUID or a typical trace id), that value is kept
+  and forwarded upstream unchanged; a missing or unsafe value is replaced by
+  a generated random UUID before the request reaches any route or the
+  security layer. It never encodes a user, token, or timestamp. The response
+  — including a 401 from the security layer or a 404 for an unrouted path —
+  always carries the same id, and `spring.cloud.gateway.globalcors` exposes
+  it (`Access-Control-Expose-Headers`) so browser JavaScript can read it too.
+  Implemented as a plain `WebFilter`
+  (`com.eventtick.gateway.filter.RequestIdWebFilter`), not a Spring Cloud
+  Gateway `GlobalFilter`, specifically so it also covers the 401s and 404s
+  that never reach a route.
+- **Controlled error responses:** every error the gateway itself produces —
+  the existing Phase 7.3 401, a 403 (nothing triggers one yet — no
+  authorization rules exist — but the handler is wired in for when one is
+  added), a 404 for a path with no route, and a 502/503/504 when an upstream
+  is unreachable, times out, or misbehaves — is the same JSON shape:
+  `{"status":..., "error":"...", "message":"...", "requestId":"...",
+  "timestamp":"..."}`. The `message` is a fixed, human-written sentence per
+  status; the underlying exception (which for a refused connection would
+  include the internal host and port) is never put in the response, only
+  logged server-side with the request id.
+- **Logging:** one line per request —
+  `request id=... method=... path=... status=... durationMs=...` — and one
+  extra line for a 5xx naming which exception class caused it. Never the
+  query string, headers, `Authorization`, JWTs, or passwords.
+
+Not implemented yet: rate limiting (Redis) and upstream timeouts (a slow
+upstream still hangs the request; only a *failed* connection gets a
+502/503/504). Only `GET`/`POST` are allowed
 cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs) must be
 added when the frontend starts calling them.
 
