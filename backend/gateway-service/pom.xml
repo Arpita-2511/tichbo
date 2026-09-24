@@ -38,12 +38,23 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Spring Cloud Gateway (reactive). Only the dependency is added
-             here; no routes/filters are configured yet — that's the next
-             phase (see docs/architecture.md, "API Gateway"). -->
+        <!-- Spring Cloud Gateway (reactive): routing (Phase 7.1) and CORS
+             (Phase 7.2). -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+
+        <!-- Phase 7.3: JWT validation at the gateway. This is Spring
+             Security's reactive (WebFlux) resource-server support plus the
+             Nimbus JOSE library it uses to verify signatures — the
+             gateway is reactive, so the servlet-based approach used in
+             user-service does not apply here. It is the only new
+             dependency: no JJWT (Nimbus already does the verification) and
+             no OAuth2 *client*/authorization-server pieces. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
 
         <dependency>

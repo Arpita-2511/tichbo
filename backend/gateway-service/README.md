@@ -11,7 +11,8 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
   `/api/catalog/**` → catalog-service; `/api/bookings/**` →
   booking-service. **Implemented (Phase 7.1)** — see "Current status".
 - **Authentication** — validate JWTs on protected routes; reject
-  invalid/expired credentials.
+  invalid/expired credentials. **Implemented (Phase 7.3)** — see
+  "Current status".
 - **Coarse-grained authorization** — role checks at the edge; fine-grained
   resource authorization stays in each business service.
 - **Dynamic rate limiting** — Redis-backed, per user/plan/route-group
@@ -52,8 +53,36 @@ from each — and browsers reject duplicates, so a `DedupeResponseHeader`
 default filter keeps the first copy. It only touches those response
 headers, never the request path.
 
-Not implemented yet: JWT validation at the edge, rate limiting (Redis),
-request IDs, logging filters, and timeouts. Only `GET`/`POST` are allowed
+**Phase 7.3 — JWT authentication at the gateway.** `user-service` still
+issues the tokens; the gateway validates them before forwarding and answers
+`401` itself (the backend is never contacted) for a missing, malformed,
+wrongly-signed, expired, wrong-issuer or wrong-audience token.
+
+- **Public** (no token needed): exactly `POST /api/auth/register` and
+  `POST /api/auth/login`. A stale token sent with these is ignored.
+- **Protected** (valid JWT required): everything else, deny-by-default —
+  `/api/users/me`, `/api/catalog/**`, `/api/bookings/**`, and any path not
+  routed at all. CORS preflight (`OPTIONS`) needs no token.
+- **Configuration:** `jwt.secret` / `jwt.issuer` / `jwt.audience`, read from
+  the env vars `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` — the same names
+  `user-service` uses, and the values **must match** or every token is
+  rejected. Set `JWT_SECRET` (at least 32 bytes) for anything beyond local
+  development; the built-in fallback is a dev-only placeholder. The secret is
+  used as raw text, not base64, exactly as `user-service` uses it.
+- **Authentication only.** No role or ownership rules yet — any valid token
+  (`CUSTOMER` or `ADMIN`) passes for catalog and booking too. The `role`
+  claim is exposed as a `ROLE_*` authority and `plan` stays readable from the
+  token, ready for later phases. The `Authorization` header is forwarded
+  unchanged (`user-service` re-validates it for `/api/users/me`).
+- The 401 body is a generic `UNAUTHENTICATED` JSON error with a bare
+  `WWW-Authenticate: Bearer`; it never says why the token failed. It carries
+  the CORS headers so the browser can read it.
+
+Direct access to the service ports (8081–8083) is still unauthenticated at
+the network level; only traffic through the gateway is checked here.
+
+Not implemented yet: rate limiting (Redis), request IDs, logging filters,
+and timeouts. Only `GET`/`POST` are allowed
 cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs) must be
 added when the frontend starts calling them.
 

@@ -1935,12 +1935,26 @@ Completed, beyond the original Phase 1 scope below — see
   Service (Phase 7.2); everything else is still mock data.
 
 The API Gateway (§5–§6) — the project's stated primary engineering
-focus — is only started: **basic path-based routing** to the three
-services (Phase 7.1) and **CORS for the browser frontend** (Phase 7.2) are
-implemented in `backend/gateway-service`, and the frontend's authentication
-now goes through it. There is still no JWT validation at the edge, rate
-limiting, or dynamic rate limiting, and the mock-data parts of the
-frontend don't use it yet.
+focus — is partly built: **basic path-based routing** to the three
+services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2) and
+**JWT authentication at the edge** (Phase 7.3) are implemented in
+`backend/gateway-service`, and the frontend's authentication now goes
+through it.
+
+How gateway authentication works (Phase 7.3): the User Service remains the
+only issuer of JWTs. For every request except `POST /api/auth/register` and
+`POST /api/auth/login`, the gateway validates the token *before* forwarding
+— HMAC signature with the shared `JWT_SECRET`, plus expiry, issuer and
+audience, the same checks the User Service applies — and answers `401`
+itself, without contacting any backend, when the token is missing or
+invalid. Valid requests are forwarded with their `Authorization` header
+unchanged, and the User Service still validates it again for `/api/users/me`.
+This is authentication only: the gateway does not decide who may do what.
+Authorization policy (roles, ownership) stays service-specific, and for now
+`/api/catalog/**` and `/api/bookings/**` simply require *a* valid token.
+The `role` and `plan` claims are available in the gateway's authentication
+context for later phases. There is still no rate limiting or dynamic rate
+limiting, and the mock-data parts of the frontend don't use the gateway yet.
 
 Original Phase 1 — Requirements & Architecture — completed:
 

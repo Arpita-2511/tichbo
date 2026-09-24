@@ -54,5 +54,18 @@ spring:
           predicates:
             - Path=/api/bookings/**
 
+# Phase 7.3: how the gateway validates the JWTs issued by user-service. These
+# must match user-service's jwt.secret / jwt.issuer / jwt.audience — same
+# environment variable names, so setting JWT_SECRET once (e.g. in the shell
+# both services are started from) configures both. The fallbacks after ':'
+# are LOCAL-DEV-ONLY placeholders identical to user-service's own, so the two
+# agree even when JWT_SECRET is unset; never rely on them outside a laptop.
+# The secret must be at least 32 bytes and is used as raw UTF-8 text (not
+# base64-decoded), exactly as user-service uses it.
+jwt:
+  secret: ${JWT_SECRET:dev-only-insecure-secret-change-before-any-real-deployment-0123456789}
+  issuer: ${JWT_ISSUER:eventtick-user-service}
+  audience: ${JWT_AUDIENCE:eventtick-clients}
+
 server:
   port: 8080
