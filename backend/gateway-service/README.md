@@ -20,7 +20,7 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
 - **Request ID generation/propagation** and **structured request logging**.
   **Implemented (Phase 7.4)** — see "Current status".
 - **Upstream timeouts** so a slow/unavailable service can't hang requests
-  indefinitely.
+  indefinitely. **Implemented (Phase 7.5)** — see "Current status".
 
 ## Current status
 
@@ -112,9 +112,39 @@ the network level; only traffic through the gateway is checked here.
   extra line for a 5xx naming which exception class caused it. Never the
   query string, headers, `Authorization`, JWTs, or passwords.
 
-Not implemented yet: rate limiting (Redis) and upstream timeouts (a slow
-upstream still hangs the request; only a *failed* connection gets a
-502/503/504). Only `GET`/`POST` are allowed
+**Phase 7.5 — upstream timeout protection.** Two timeouts bound how long the
+gateway will wait on an upstream service, configured under
+`spring.cloud.gateway.httpclient` in `application.yml`:
+
+| Property | Default | Env override | Meaning |
+|---|---|---|---|
+| `connect-timeout` | `3000` (ms) | `GATEWAY_CONNECT_TIMEOUT_MS` | max time to open the TCP connection to the upstream |
+| `response-timeout` | `8s` | `GATEWAY_RESPONSE_TIMEOUT` | max time to wait for the upstream's response once the request has been sent |
+
+These are conservative local-development values, not aggressive production
+ones — enough headroom for a real request (a DB write, a seat lock) to
+finish during normal testing, while still bounding the worst case. Spring
+Cloud Gateway proxies every route through one shared HTTP client built from
+this configuration, so it applies uniformly to all three routes
+(`user-service`, `catalog-service`, `booking-service`) without repeating it
+per route.
+
+A timeout or connection failure is reported through the same
+`GatewayErrorHandler` and JSON error shape as Phase 7.4:
+
+- connection refused / upstream unreachable → **503**
+- no response within `response-timeout` (or a connect timeout) → **504**
+- upstream connection broken mid-response / other I/O failure → **502**
+
+As with every gateway-generated error, the response never includes the
+underlying exception, an internal hostname, or a port — only
+`status`/`error`/`message`/`requestId`/`timestamp`, with CORS headers and
+`X-Request-ID` intact. This is timeout protection only: there is no retry,
+no circuit breaker, and no automatic recovery — a timed-out request simply
+fails once, cleanly, instead of hanging.
+
+Not implemented yet: rate limiting (Redis), retries, and circuit breaking.
+Only `GET`/`POST` are allowed
 cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs) must be
 added when the frontend starts calling them.
 

@@ -26,8 +26,21 @@ final class StubUpstream {
 
     private final HttpServer server;
     private final List<Received> received = new CopyOnWriteArrayList<>();
+    private final java.time.Duration artificialDelay;
 
     StubUpstream() {
+        this(java.time.Duration.ZERO);
+    }
+
+    /**
+     * A stub that waits {@code artificialDelay} before writing any response
+     * bytes — for proving the gateway's own response-timeout fires, not the
+     * stub timing out. The wait runs on the JDK {@code HttpServer}'s own
+     * request thread (its default executor), never on a gateway reactor
+     * thread, so it cannot block the gateway itself.
+     */
+    StubUpstream(java.time.Duration artificialDelay) {
+        this.artificialDelay = artificialDelay;
         try {
             server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         } catch (IOException e) {
@@ -40,6 +53,15 @@ final class StubUpstream {
                     exchange.getRequestURI().getPath(),
                     exchange.getRequestURI().getQuery(),
                     ids == null ? List.of() : List.copyOf(ids)));
+            if (!this.artificialDelay.isZero()) {
+                try {
+                    Thread.sleep(this.artificialDelay.toMillis());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    exchange.close();
+                    return;
+                }
+            }
             byte[] body = "{\"from\":\"stub-upstream\"}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             if (exchange.getRequestURI().getPath().endsWith(SETS_OWN_REQUEST_ID)) {

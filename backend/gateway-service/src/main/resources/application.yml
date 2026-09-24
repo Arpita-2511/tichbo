@@ -39,6 +39,30 @@ spring:
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
 
+      # Phase 7.5: bounds how long the gateway will wait on an upstream
+      # service (user-service/catalog-service/booking-service), so a
+      # request fails fast and predictably instead of hanging forever when
+      # a service is down or stuck. This is the single HTTP client Spring
+      # Cloud Gateway uses to call every route below, so it applies
+      # uniformly to all three — none of the routes override it.
+      #
+      # connect-timeout: max time to open the TCP connection to the
+      # upstream. A refused connection (service down) fails almost
+      # instantly regardless; this bounds a connection that instead hangs
+      # (e.g. a firewalled/unresponsive host) -> GatewayErrorHandler
+      # reports that as 503.
+      #
+      # response-timeout: max time to wait for the upstream's response
+      # once the request has been sent. Conservative for local dev — long
+      # enough for a real request (DB write, seat lock, etc.) to finish
+      # without being cut off while testing, short enough that a stuck
+      # service doesn't leave a caller hanging -> GatewayErrorHandler
+      # reports that as 504. Both are env-overridable, never aggressively
+      # low "production" values.
+      httpclient:
+        connect-timeout: ${GATEWAY_CONNECT_TIMEOUT_MS:3000}
+        response-timeout: ${GATEWAY_RESPONSE_TIMEOUT:8s}
+
       # Phase 7.1: plain path-based routing. No filters on purpose — the
       # backend services already serve these exact /api/... paths, so the
       # original path is forwarded unchanged (no StripPrefix/RewritePath).

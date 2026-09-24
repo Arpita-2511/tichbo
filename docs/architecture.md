@@ -1937,10 +1937,10 @@ Completed, beyond the original Phase 1 scope below — see
 The API Gateway (§5–§6) — the project's stated primary engineering
 focus — is partly built: **basic path-based routing** to the three
 services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2),
-**JWT authentication at the edge** (Phase 7.3) and **request correlation
-ids with controlled error responses** (Phase 7.4) are implemented in
-`backend/gateway-service`, and the frontend's authentication now goes
-through it.
+**JWT authentication at the edge** (Phase 7.3), **request correlation ids
+with controlled error responses** (Phase 7.4), and **upstream timeout
+protection** (Phase 7.5) are implemented in `backend/gateway-service`, and
+the frontend's authentication now goes through it.
 
 How gateway authentication works (Phase 7.3): the User Service remains the
 only issuer of JWTs. For every request except `POST /api/auth/register` and
@@ -1967,8 +1967,25 @@ a timestamp — and never includes a stack trace, an exception's class or
 message, a JWT's contents, the signing secret, or an internal host/path.
 Request logging is limited to the id, method, path, status and duration;
 the query string, headers, `Authorization`, JWTs and passwords are never
-logged. There is still no rate limiting or dynamic rate limiting, and the
-mock-data parts of the frontend don't use the gateway yet.
+logged.
+
+How upstream timeout protection works (Phase 7.5): the gateway bounds how
+long it will wait on User Service, Catalog Service, and Booking Service, so
+a request fails fast and predictably instead of hanging when a service is
+down or stuck. A connection-timeout (default 3s) bounds opening the TCP
+connection to the upstream, and a response-timeout (default 8s) bounds
+waiting for the upstream's response once the request has been sent — both
+conservative values for local development, not aggressive production ones,
+and both configured once (`spring.cloud.gateway.httpclient`) so they apply
+uniformly to all three routes without per-route repetition. A failure is
+reported through the same Phase 7.4 error mechanism and JSON shape: a
+refused/unreachable connection is a 503, a timeout is a 504, and any other
+upstream I/O failure is a 502 — never with the underlying exception, an
+internal hostname, or a port in the response. This is timeout protection
+only: it is not a circuit breaker, it does not retry a failed request, and
+it does not recover a service automatically — those remain future work.
+There is still no rate limiting or dynamic rate limiting, and the mock-data
+parts of the frontend don't use the gateway yet.
 
 Original Phase 1 — Requirements & Architecture — completed:
 
