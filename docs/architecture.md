@@ -1935,9 +1935,11 @@ Completed, beyond the original Phase 1 scope below — see
   (no Gateway in between yet); everything else is still mock data.
 
 The API Gateway (§5–§6) — the project's stated primary engineering
-focus — has **not** been implemented yet. Everything above was built
-directly against each service; there is no Gateway routing, JWT
-validation at the edge, or dynamic rate limiting in front of them yet.
+focus — is only started: **basic path-based routing** to the three
+services is implemented (Phase 7.1; `backend/gateway-service`), but
+nothing calls it yet — everything above was built and is still used
+directly against each service. There is no JWT validation at the edge,
+rate limiting, or dynamic rate limiting in front of them yet.
 
 Original Phase 1 — Requirements & Architecture — completed:
 

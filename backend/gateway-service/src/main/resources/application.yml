@@ -2,5 +2,27 @@ spring:
   application:
     name: gateway-service
 
+  cloud:
+    gateway:
+      # Phase 7.1: plain path-based routing. No filters on purpose — the
+      # backend services already serve these exact /api/... paths, so the
+      # original path is forwarded unchanged (no StripPrefix/RewritePath).
+      routes:
+
+        - id: user-service
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/auth/**,/api/users/**
+
+        - id: catalog-service
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/catalog/**
+
+        - id: booking-service
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/bookings/**
+
 server:
   port: 8080

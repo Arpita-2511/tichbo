@@ -8,8 +8,8 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
 ## Eventual responsibilities (per `docs/architecture.md` §5–§6)
 
 - **Request routing** — `/api/auth/**` and `/api/users/**` → user-service;
-  `/api/content/**`, `/api/venues/**`, `/api/shows/**` → catalog-service;
-  `/api/bookings/**` → booking-service.
+  `/api/catalog/**` → catalog-service; `/api/bookings/**` →
+  booking-service. **Implemented (Phase 7.1)** — see "Current status".
 - **Authentication** — validate JWTs on protected routes; reject
   invalid/expired credentials.
 - **Coarse-grained authorization** — role checks at the edge; fine-grained
@@ -22,10 +22,23 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
 
 ## Current status
 
-Skeleton only. `spring-cloud-starter-gateway` is on the classpath and the
-app boots, but **no routes are configured** — every request currently has
-nowhere to go. No authentication, rate limiting, or logging filters exist
-yet.
+**Phase 7.1 — basic routing only.** Three routes are configured in
+`src/main/resources/application.yml`, forwarding the original path
+unchanged (no `StripPrefix`/`RewritePath` — the backends already serve
+these exact `/api/...` paths):
+
+| Route id | Path predicate | Upstream |
+|---|---|---|
+| `user-service` | `/api/auth/**`, `/api/users/**` | `http://localhost:8081` |
+| `catalog-service` | `/api/catalog/**` | `http://localhost:8082` |
+| `booking-service` | `/api/bookings/**` | `http://localhost:8083` |
+
+Anything else returns `404`. Upstream URLs are fixed to localhost for now.
+
+Not implemented yet: JWT validation at the edge, rate limiting (Redis),
+request IDs, logging filters, timeouts, and CORS at the gateway. The
+frontend still calls `user-service` directly, not this gateway — and
+until it does, CORS is handled by `user-service` itself.
 
 ## Tech
 

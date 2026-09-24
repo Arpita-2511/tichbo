@@ -9,6 +9,6 @@ class GatewayServiceApplicationTests {
     @Test
     void contextLoads() {
         // Verifies the Spring application context starts successfully.
-        // No routes/filters exist yet, so there is nothing else to assert.
+        // The routes themselves are covered by GatewayRoutesTest.
     }
 }
