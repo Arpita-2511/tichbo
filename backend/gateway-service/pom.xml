@@ -57,9 +57,31 @@
             <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
 
+        <!-- Phase 11: static Redis-backed rate limiting. Brings the reactive
+             Lettuce client and auto-configures ReactiveStringRedisTemplate,
+             which is what turns on Spring Cloud Gateway's own
+             GatewayRedisAutoConfiguration (RedisRateLimiter bean) — see
+             config/GatewayRateLimitConfig and filter/RateLimitingGlobalFilter.
+             It is the only new dependency. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Test-only: a real redis-server process (no Docker/WSL required in
+             this environment), so rate-limiter tests exercise the actual
+             Redis-backed Lua token bucket instead of a hand-rolled fake. See
+             docs/architecture.md, "Redis testing (Phase 11)", for why. -->
+        <dependency>
+            <groupId>com.github.codemonstur</groupId>
+            <artifactId>embedded-redis</artifactId>
+            <version>1.4.3</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

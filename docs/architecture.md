@@ -1938,9 +1938,10 @@ The API Gateway (§5–§6) — the project's stated primary engineering
 focus — is partly built: **basic path-based routing** to the three
 services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2),
 **JWT authentication at the edge** (Phase 7.3), **request correlation ids
-with controlled error responses** (Phase 7.4), and **upstream timeout
-protection** (Phase 7.5) are implemented in `backend/gateway-service`, and
-the frontend's authentication now goes through it.
+with controlled error responses** (Phase 7.4), **upstream timeout
+protection** (Phase 7.5), and now **static, Redis-backed rate limiting**
+(Phase 11) are implemented in `backend/gateway-service`, and the frontend's
+authentication now goes through it.
 
 How gateway authentication works (Phase 7.3): the User Service remains the
 only issuer of JWTs. For every request except `POST /api/auth/register` and
@@ -1984,8 +1985,65 @@ upstream I/O failure is a 502 — never with the underlying exception, an
 internal hostname, or a port in the response. This is timeout protection
 only: it is not a circuit breaker, it does not retry a failed request, and
 it does not recover a service automatically — those remain future work.
-There is still no rate limiting or dynamic rate limiting, and the mock-data
-parts of the frontend don't use the gateway yet.
+
+How rate limiting works (Phase 11): Redis is now part of the gateway's
+architecture, as the shared state a request counter needs when more than
+one gateway instance is running — an in-memory counter would let each
+instance grant its own separate allowance, so the token bucket lives in
+Redis instead (Spring Cloud Gateway's own `RedisRateLimiter`, one atomic
+Lua script per check). Rate limiting sits after JWT authentication and
+before routing (`Client -> Gateway -> JWT authentication -> Rate limiter ->
+Route`), and belongs at the gateway rather than in each service for the
+same reason authentication, request correlation, and timeout protection
+do: it is the one place already doing this kind of cross-cutting work for
+every request, so User Service, Catalog Service, and Booking Service do not
+each need their own Redis client and rate-limiting logic.
+
+The key strategy distinguishes authenticated callers from everyone else. A
+request carrying a JWT the gateway already validated is keyed by that
+token's `sub` claim (one bucket per user, regardless of device or IP);
+every other request — the public register/login endpoints, or anything
+else the gateway did not authenticate — is keyed by the caller's actual TCP
+source address, not a client-supplied header such as `X-Forwarded-For`,
+since there is no trusted reverse proxy in front of the gateway yet and
+trusting a client-supplied identity would let a caller pick a fresh bucket
+at will.
+
+The initial policy is deliberately a single static, generous set of
+numbers (`spring.cloud.gateway.redis-rate-limiter.*`: replenish rate 5/s,
+burst capacity 10, 1 token per request, all env-overridable) applied
+uniformly to every request — separated only by the key above, not by
+route, plan, or role. If Redis itself is unreachable, the limiter fails
+open (the request is allowed, not blocked) rather than a Redis outage
+becoming a full API outage; short Redis connect/command timeouts
+(`spring.data.redis.timeout`/`.connect-timeout`, 300ms by default) keep
+that discovery fast. A request over the limit gets `429 Too Many Requests`
+in the same JSON error shape Phase 7.4 established
+(`status`/`error`/`message`/`requestId`/`timestamp`), with `X-Request-ID`
+and CORS headers intact, plus the conventional (not IETF-standardized)
+`X-RateLimit-*` headers on every response so a well-behaved client can back
+off before it is ever limited.
+
+This is explicitly the first, simplest rate-limiting phase: there is no
+per-plan, per-role, adaptive, or system-load-based policy, and no
+admin-configurable limits or monitoring dashboard — Phase 12 (dynamic rate
+limiting) is expected to build those on top of the mechanism established
+here, not replace it. There is still no rate limiting *policy* beyond this
+one static shared numeric limit, and the mock-data parts of the frontend
+don't use the gateway yet.
+
+**Redis testing (Phase 11):** this development machine has neither Docker
+nor an installed WSL distribution, so Testcontainers — the usual way to get
+a real, disposable Redis for tests — was not an option here. Rather than
+weaken the tests to a hand-rolled fake of the Redis protocol (which would
+not actually prove the Lua-script token bucket works), the gateway's tests
+run a genuine `redis-server` binary via `com.github.codemonstur:embedded-redis`
+(a maintained fork that bundles native builds for Windows/macOS/Linux),
+started fresh per test class and stopped afterward — a real Redis process,
+just disposable and test-scoped, exercising the exact code path production
+does. A project with Docker or WSL available should prefer a Testcontainers
+Redis module instead; this choice was made specifically because that
+wasn't available in this environment, not as a general recommendation.
 
 Original Phase 1 — Requirements & Architecture — completed:
 

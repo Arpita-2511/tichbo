@@ -2,8 +2,45 @@ spring:
   application:
     name: gateway-service
 
+  # Phase 11: Redis is the shared state for rate limiting — see
+  # ratelimit.RateLimitingGlobalFilter. Multiple gateway instances pointed at
+  # the same Redis therefore share one limit per key, instead of each
+  # instance separately granting its own allowance. Host/port are
+  # env-overridable for anything beyond a single local Redis. timeout and
+  # connect-timeout are kept short and conservative on purpose: if Redis is
+  # down or unreachable, the rate limiter fails open (see RedisRateLimiter's
+  # own error handling) rather than blocking requests, so a slow Redis must
+  # not also mean a slow gateway — this bounds how long that takes to
+  # discover.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: ${REDIS_TIMEOUT:300ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:300ms}
+
   cloud:
     gateway:
+      # Phase 11: the initial static rate-limit policy, applied uniformly to
+      # every request that reaches routing (see RateLimitingGlobalFilter) —
+      # separated only by *who* is calling (RateLimitKeyResolver: one bucket
+      # per authenticated user, one per IP for everyone else), not by route
+      # or plan. Deliberately generous for local development: enough for a
+      # page load's handful of calls without tripping during normal manual
+      # testing, while still being small enough to demonstrate and test the
+      # limit being hit. Phase 12 (dynamic rate limiting) is expected to
+      # replace this with per-plan/adaptive policies; nothing here should be
+      # read as tuned for production traffic.
+      #
+      # replenish-rate: tokens refilled per second (steady-state rate).
+      # burst-capacity: bucket size — the most a caller can do in one burst
+      # before being limited to the replenish rate.
+      # requested-tokens: cost of a single request; 1 keeps this a plain
+      # per-request limit rather than weighting some calls more than others.
+      redis-rate-limiter:
+        replenish-rate: ${RATE_LIMIT_REPLENISH_RATE:5}
+        burst-capacity: ${RATE_LIMIT_BURST_CAPACITY:10}
+        requested-tokens: ${RATE_LIMIT_REQUESTED_TOKENS:1}
       # Phase 7.2: CORS for the browser frontend, which now talks to the
       # gateway instead of the services. The gateway answers preflight
       # (OPTIONS) requests itself and adds CORS headers to real responses.

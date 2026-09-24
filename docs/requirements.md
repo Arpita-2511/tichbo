@@ -582,6 +582,36 @@ The system should prevent indefinitely waiting for an unavailable or slow downst
 
 # 14. Rate-Limiting Requirements
 
+**Implementation status (Phase 11):** a first, intentionally static
+implementation exists in `backend/gateway-service`
+(`com.eventtick.gateway.ratelimit`) covering part of this section:
+
+* **FR-26** (API rate limiting) — implemented, but as one fixed policy for
+  every route/client, not yet "according to configured policies" (plural).
+* **FR-27** (dynamic rate limiting) — **not implemented.** The policy is a
+  single hard-coded set of numbers in `application.yml`; it does not vary
+  by plan, route group, or request type. This is explicitly Phase 12.
+* **FR-28** (shared rate-limit state) — implemented: the state is Redis, so
+  multiple Gateway instances correctly share one allowance per key.
+* **FR-29** (Redis-based rate limiting) — implemented, using a token-bucket
+  algorithm (Spring Cloud Gateway's `RedisRateLimiter`), matching the
+  conceptual flow this section describes below, with the caller's identity
+  (authenticated user, or IP for everyone else) as the key in place of
+  "User + Route Group" — there is only one route group in this phase.
+* **FR-30** (rate-limit response) — implemented: `HTTP 429`. No retry
+  guidance is included in the body yet, beyond the standard
+  `X-RateLimit-*` headers.
+* **FR-31** (administrative rate-limit configuration) — **not
+  implemented.** Policy values are read from configuration/environment
+  variables at startup; there is no runtime/admin-configurable policy
+  store and no way to change a policy without restarting the Gateway. Also
+  Phase 12 (and the Admin Dashboard phase).
+* **FR-32** (rate-limit failure handling) — implemented, with an
+  explicit, documented policy: if Redis is unreachable, the limiter fails
+  open (requests are allowed, not blocked) rather than silently bypassing
+  the *concept* of a failure policy — see `docs/architecture.md`'s Phase 11
+  section for the reasoning.
+
 ## FR-26: API Rate Limiting
 
 The system shall limit the number of requests that a user or client can make to specified API route groups according to configured policies.

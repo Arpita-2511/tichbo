@@ -15,8 +15,9 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
   "Current status".
 - **Coarse-grained authorization** — role checks at the edge; fine-grained
   resource authorization stays in each business service.
-- **Dynamic rate limiting** — Redis-backed, per user/plan/route-group
-  token buckets (FR-26–FR-32).
+- **Rate limiting** — Redis-backed. **Static policy implemented (Phase 11)**
+  — see "Current status". Per user/plan/route-group **dynamic** limits
+  (FR-26–FR-32) are Phase 12, not yet implemented.
 - **Request ID generation/propagation** and **structured request logging**.
   **Implemented (Phase 7.4)** — see "Current status".
 - **Upstream timeouts** so a slow/unavailable service can't hang requests
@@ -143,10 +144,87 @@ underlying exception, an internal hostname, or a port — only
 no circuit breaker, and no automatic recovery — a timed-out request simply
 fails once, cleanly, instead of hanging.
 
-Not implemented yet: rate limiting (Redis), retries, and circuit breaking.
-Only `GET`/`POST` are allowed
-cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs) must be
-added when the frontend starts calling them.
+Not implemented yet: retries and circuit breaking. Only `GET`/`POST` are
+allowed cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs)
+must be added when the frontend starts calling them.
+
+**Phase 11 — static, Redis-backed rate limiting.** The flow is
+`Client -> Gateway -> JWT authentication -> Rate limiter -> Route to
+backend`: rate limiting runs after Spring Security has already decided
+whether (and who) a request is authenticated as, and before the request is
+forwarded anywhere.
+
+- **Why the gateway, not each service:** it is already the single place that
+  does authentication, request correlation, and timeout protection for
+  every request — adding rate limiting to each of user/catalog/booking
+  individually would mean three separate, possibly-inconsistent
+  implementations, and would need each service to reimplement the
+  authenticated-vs-anonymous identity logic the gateway already has from
+  Phase 7.3.
+- **Algorithm and shared state:** Spring Cloud Gateway's own
+  `RedisRateLimiter` — a token bucket run as one atomic Lua script inside
+  Redis. Because the bucket lives in Redis, not in this process's memory,
+  multiple gateway instances pointed at the same Redis correctly share one
+  limit per key; an in-memory counter would let each instance grant its own
+  separate allowance, which is explicitly not what's implemented.
+- **Key strategy** (`com.eventtick.gateway.ratelimit.RateLimitKeyResolver`):
+  a request with a JWT that Phase 7.3 validated is keyed by the token's
+  `sub` claim (`user:<uuid>`) — one bucket per user regardless of device or
+  IP. Everything else — the public `register`/`login` endpoints, or any
+  other unauthenticated request — is keyed by the caller's TCP source
+  address (`ip:<address>`), **not** a client-supplied header such as
+  `X-Forwarded-For`: there is no trusted reverse proxy in front of the
+  gateway in this local-development setup, so a client-supplied header
+  would let an attacker pick a fresh bucket for every request just by
+  changing it.
+- **Initial static policy** (`spring.cloud.gateway.redis-rate-limiter.*`,
+  read by `RateLimitingGlobalFilter`, one shared numeric policy for every
+  route — separated only by the key above, not by route or plan):
+
+  | Property | Default | Env override | Meaning |
+  |---|---|---|---|
+  | `replenish-rate` | `5` | `RATE_LIMIT_REPLENISH_RATE` | tokens refilled per second (steady-state rate) |
+  | `burst-capacity` | `10` | `RATE_LIMIT_BURST_CAPACITY` | bucket size — the most a caller can do in one burst |
+  | `requested-tokens` | `1` | `RATE_LIMIT_REQUESTED_TOKENS` | cost of a single request |
+
+  Deliberately generous for local development and deliberately simple —
+  everyone gets the same numeric policy regardless of plan or role. Phase 12
+  (dynamic rate limiting) is expected to replace this with per-plan/adaptive
+  policies; nothing here should be read as tuned for production traffic.
+- **If Redis is unreachable or errors,** `RedisRateLimiter` **fails open**:
+  the request is treated as allowed, not blocked, and the failure is only
+  logged (at Spring Cloud Gateway's own debug level) — a rate-limiter outage
+  must not become a full API outage. `spring.data.redis.timeout` and
+  `.connect-timeout` (`300ms` each by default, env-overridable via
+  `REDIS_TIMEOUT`/`REDIS_CONNECT_TIMEOUT`) keep that discovery fast rather
+  than a hang, in the same spirit as Phase 7.5's upstream timeouts.
+- **429 response:** the same JSON shape as every other gateway-generated
+  error — `{"status":429,"error":"TOO_MANY_REQUESTS","message":"...",
+  "requestId":"...","timestamp":"..."}` — with `X-Request-ID` and CORS
+  headers intact, so the browser can read it. Every response, allowed or
+  not, also carries the conventional (not IETF-standardized)
+  `X-RateLimit-Remaining` / `X-RateLimit-Replenish-Rate` /
+  `X-RateLimit-Burst-Capacity` headers `RedisRateLimiter` itself builds, so
+  a well-behaved client can back off before it ever gets a 429.
+- **Requires Redis.** `spring.data.redis.host`/`.port` (env `REDIS_HOST`/
+  `REDIS_PORT`, default `localhost:6379`) must point at a running Redis for
+  rate limiting to actually take effect; see "Local Redis for development"
+  below. Nothing else in the gateway depends on Redis, and the gateway
+  starts and serves traffic normally (fail-open, as above) without one.
+
+Not implemented yet: dynamic/per-plan/adaptive policies, admin-configurable
+limits, and anything load-based — all Phase 12. This is authentication +
+static rate limiting only.
+
+### Local Redis for development
+
+Rate limiting needs a Redis reachable at `spring.data.redis.host`/`.port`
+(default `localhost:6379`). This repository does not run one for you (no
+Docker/deployment changes were made in this phase) — start one yourself,
+for example `redis-server` if installed locally, a Redis Windows/WSL
+package, or a manually-started `docker run -p 6379:6379 redis` if Docker is
+available on your machine. Without one, the gateway still starts and serves
+traffic normally — it just never rate-limits (fail-open, documented above).
 
 ## Tech
 
