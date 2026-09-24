@@ -582,35 +582,45 @@ The system should prevent indefinitely waiting for an unavailable or slow downst
 
 # 14. Rate-Limiting Requirements
 
-**Implementation status (Phase 11):** a first, intentionally static
-implementation exists in `backend/gateway-service`
-(`com.eventtick.gateway.ratelimit`) covering part of this section:
+**Implementation status (Phase 11, then Phase 12):** Phase 11 built one
+fixed policy; Phase 12 replaced *what policy applies* with a per-category/
+per-tier selection while keeping the same underlying mechanism. Both live
+in `backend/gateway-service` (`com.eventtick.gateway.ratelimit`):
 
-* **FR-26** (API rate limiting) — implemented, but as one fixed policy for
-  every route/client, not yet "according to configured policies" (plural).
-* **FR-27** (dynamic rate limiting) — **not implemented.** The policy is a
-  single hard-coded set of numbers in `application.yml`; it does not vary
-  by plan, route group, or request type. This is explicitly Phase 12.
+* **FR-26** (API rate limiting) — implemented. As of Phase 12, "specified
+  API route groups" and "configured policies" (plural) are real: four
+  request categories (`AUTH`/`CATALOG`/`BOOKING`/`USER`, path-based — see
+  `RequestCategoryClassifier`), each with its own policy per tier.
+* **FR-27** (dynamic rate limiting) — **implemented for the "vary by
+  plan/route group/request type" part.** The policy resolved for a request
+  depends on its category (route group) and the caller's plan/role (from
+  the validated JWT) — see `RateLimitPolicyResolver`. **Not implemented**:
+  "administrative configuration" as a policy dimension — see FR-31.
 * **FR-28** (shared rate-limit state) — implemented: the state is Redis, so
-  multiple Gateway instances correctly share one allowance per key.
+  multiple Gateway instances correctly share one allowance per key. Phase
+  12 additionally had to fold the policy id into that key
+  (`<policyId>:<identity>`), since `RedisRateLimiter` itself only uses the
+  policy id to pick a numeric config, not as part of the actual Redis key —
+  otherwise two different policies for the same caller would collide.
 * **FR-29** (Redis-based rate limiting) — implemented, using a token-bucket
   algorithm (Spring Cloud Gateway's `RedisRateLimiter`), matching the
-  conceptual flow this section describes below, with the caller's identity
-  (authenticated user, or IP for everyone else) as the key in place of
-  "User + Route Group" — there is only one route group in this phase.
+  conceptual flow this section describes below, with
+  `<category>:<tier>` as the "Route Group" input and the caller's identity
+  (authenticated user, or IP for everyone else) as the "User" input.
 * **FR-30** (rate-limit response) — implemented: `HTTP 429`. No retry
   guidance is included in the body yet, beyond the standard
   `X-RateLimit-*` headers.
 * **FR-31** (administrative rate-limit configuration) — **not
-  implemented.** Policy values are read from configuration/environment
-  variables at startup; there is no runtime/admin-configurable policy
-  store and no way to change a policy without restarting the Gateway. Also
-  Phase 12 (and the Admin Dashboard phase).
+  implemented.** Policy values (now a full category × tier matrix) are read
+  from configuration/environment variables at startup; there is no
+  runtime/admin-configurable policy store and no way to change a policy
+  without restarting the Gateway. Explicitly Phase 13+ (and the Admin
+  Dashboard phase).
 * **FR-32** (rate-limit failure handling) — implemented, with an
   explicit, documented policy: if Redis is unreachable, the limiter fails
   open (requests are allowed, not blocked) rather than silently bypassing
-  the *concept* of a failure policy — see `docs/architecture.md`'s Phase 11
-  section for the reasoning.
+  the *concept* of a failure policy — see `docs/architecture.md`'s Phase 12
+  section for the reasoning. Unchanged since Phase 11.
 
 ## FR-26: API Rate Limiting
 

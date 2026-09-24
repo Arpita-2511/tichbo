@@ -1939,9 +1939,10 @@ focus — is partly built: **basic path-based routing** to the three
 services (Phase 7.1), **CORS for the browser frontend** (Phase 7.2),
 **JWT authentication at the edge** (Phase 7.3), **request correlation ids
 with controlled error responses** (Phase 7.4), **upstream timeout
-protection** (Phase 7.5), and now **static, Redis-backed rate limiting**
-(Phase 11) are implemented in `backend/gateway-service`, and the frontend's
-authentication now goes through it.
+protection** (Phase 7.5), **Redis-backed rate limiting** (Phase 11, static),
+and now **dynamic policy selection** for that rate limiting (Phase 12) are
+implemented in `backend/gateway-service`, and the frontend's authentication
+now goes through it.
 
 How gateway authentication works (Phase 7.3): the User Service remains the
 only issuer of JWTs. For every request except `POST /api/auth/register` and
@@ -1999,23 +2000,19 @@ do: it is the one place already doing this kind of cross-cutting work for
 every request, so User Service, Catalog Service, and Booking Service do not
 each need their own Redis client and rate-limiting logic.
 
-The key strategy distinguishes authenticated callers from everyone else. A
-request carrying a JWT the gateway already validated is keyed by that
-token's `sub` claim (one bucket per user, regardless of device or IP);
-every other request — the public register/login endpoints, or anything
-else the gateway did not authenticate — is keyed by the caller's actual TCP
-source address, not a client-supplied header such as `X-Forwarded-For`,
-since there is no trusted reverse proxy in front of the gateway yet and
-trusting a client-supplied identity would let a caller pick a fresh bucket
-at will.
+The identity half of the bucket key distinguishes authenticated callers
+from everyone else, and is unchanged since Phase 11. A request carrying a
+JWT the gateway already validated is keyed by that token's `sub` claim (one
+bucket per user, regardless of device or IP); every other request — the
+public register/login endpoints, or anything else the gateway did not
+authenticate — is keyed by the caller's actual TCP source address, not a
+client-supplied header such as `X-Forwarded-For`, since there is no
+trusted reverse proxy in front of the gateway yet and trusting a
+client-supplied identity would let a caller pick a fresh bucket at will.
 
-The initial policy is deliberately a single static, generous set of
-numbers (`spring.cloud.gateway.redis-rate-limiter.*`: replenish rate 5/s,
-burst capacity 10, 1 token per request, all env-overridable) applied
-uniformly to every request — separated only by the key above, not by
-route, plan, or role. If Redis itself is unreachable, the limiter fails
-open (the request is allowed, not blocked) rather than a Redis outage
-becoming a full API outage; short Redis connect/command timeouts
+If Redis itself is unreachable, the limiter fails open (the request is
+allowed, not blocked) rather than a Redis outage becoming a full API
+outage; short Redis connect/command timeouts
 (`spring.data.redis.timeout`/`.connect-timeout`, 300ms by default) keep
 that discovery fast. A request over the limit gets `429 Too Many Requests`
 in the same JSON error shape Phase 7.4 established
@@ -2024,15 +2021,75 @@ and CORS headers intact, plus the conventional (not IETF-standardized)
 `X-RateLimit-*` headers on every response so a well-behaved client can back
 off before it is ever limited.
 
-This is explicitly the first, simplest rate-limiting phase: there is no
-per-plan, per-role, adaptive, or system-load-based policy, and no
-admin-configurable limits or monitoring dashboard — Phase 12 (dynamic rate
-limiting) is expected to build those on top of the mechanism established
-here, not replace it. There is still no rate limiting *policy* beyond this
-one static shared numeric limit, and the mock-data parts of the frontend
-don't use the gateway yet.
+How dynamic policy selection works (Phase 12): Phase 11's one shared
+numeric policy is replaced by a policy chosen per request from two
+independent inputs, resolved in this order:
 
-**Redis testing (Phase 11):** this development machine has neither Docker
+1. **Request category** — a deterministic classification of the path alone
+   (`AUTH`/`CATALOG`/`BOOKING`/`USER`/`UNKNOWN`), independent of which
+   Spring Cloud Gateway route id matched. `UNKNOWN` (an unrecognized path)
+   short-circuits straight to a fixed, conservative fallback policy — an
+   unrecognized endpoint is never left unlimited.
+2. **Authentication state** — no validated JWT -> the `PUBLIC` tier.
+3. **Role** — an authenticated request with `role=ADMIN` -> the `ADMIN`
+   tier, checked *before* plan and regardless of it. `ADMIN` is a role,
+   `Free`/`Pro`/`Premium` are plans — two independent columns on the User
+   Service's `users` table (a `UserRole` enum and a `plans` foreign key), so
+   an account can in principle be an admin on any plan; role wins because it
+   represents operational trust, not purchased capacity.
+4. **Plan** — otherwise, the JWT's `plan` claim, matched case-insensitively
+   against the plans that actually exist (`Free`, `Pro`, `Premium` — see
+   `database/migrations/0003_seed_plans.up.sql`; not the frontend's own,
+   unrelated mock data, which also lists a `VIP` plan with no backend
+   counterpart) -> the matching tier.
+5. **Fallback** — a missing or unrecognized `plan` claim resolves to `FREE`
+   (the JWT decoder does not structurally validate this claim, only `role`
+   and `sub` are validated, so an unrecognized value must never be silently
+   read as a higher tier); and if the resolved (category, tier) pair simply
+   has no configured policy, the same conservative fallback policy from
+   step 1 applies.
+
+Only the validated JWT's claims are ever consulted — never a client-supplied
+header, query parameter, or body field, so a caller sending `X-Plan: PRO`
+or `X-Role: ADMIN` gets exactly the policy their real, signed token implies
+and nothing more.
+
+The category/tier matrix (`eventtick.rate-limit.policies.*` in
+`application.yml` — a dedicated namespace, since
+`spring.cloud.gateway.redis-rate-limiter.*` only has room for one flat
+policy and is retired) holds illustrative development numbers, not
+production-certified ones: `CATALOG` (read-heavy) is the most generous
+category at every tier, `BOOKING` (seat-lock contention) the strictest
+authenticated one, `USER` in between, and `AUTH` has only a `PUBLIC` entry
+(the strictest policy of all, IP-keyed) since the public chain never
+authenticates a register/login request in the first place. Across tiers,
+`PRO` is roughly 2–2.5× `FREE`, `PREMIUM` roughly 2× `PRO`, and `ADMIN` is
+generously high everywhere for operational/support work, not as a bypass.
+Changing the matrix needs a restart — there is no runtime/admin-configurable
+policy management in this phase (Phase 13+ territory).
+
+Two implementation findings worth recording because they shaped the
+design: first, reading Spring Cloud Gateway 4.1.5's own source shows
+`RedisRateLimiter.isAllowed(routeId, id)` uses `routeId` only to select
+which numeric `Config` applies — the actual Redis key is built from `id`
+alone — so the bucket key actually used is `<policyId>:<identity>`, not
+just the identity, or two different policies applied to the same caller
+would silently share one bucket. Second, the Phase 11 rate limiter was
+built as a Spring Cloud Gateway `GlobalFilter`, which (discovered while
+testing the `UNKNOWN`-category fallback) never runs at all for a path that
+matches no route — the same limitation Phase 7.4's `RequestIdWebFilter`
+already worked around for 401s/404s. The limiter is now a plain
+`WebFilter`, ordered to run after Spring Security's chain (so the
+authenticated identity is available) but for every request regardless of
+whether a route exists.
+
+This remains authentication-driven, JWT-only policy selection — there is
+still no admin-configurable or database-backed runtime policy management,
+no adaptive/system-load-based limiting, and no machine-learning-based rate
+limiting; all explicitly future work beyond Phase 12. The mock-data parts
+of the frontend don't use the gateway yet.
+
+**Redis testing (Phase 11, still used by Phase 12's tests):** this development machine has neither Docker
 nor an installed WSL distribution, so Testcontainers — the usual way to get
 a real, disposable Redis for tests — was not an option here. Rather than
 weaken the tests to a hand-rolled fake of the Redis protocol (which would

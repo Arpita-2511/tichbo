@@ -82,6 +82,12 @@ final class TestTokens {
             return this;
         }
 
+        /** Matches the real values user-service puts in this claim (see database/migrations/0003_seed_plans.up.sql): Free, Pro, Premium. */
+        Builder plan(String plan) {
+            this.plan = plan;
+            return this;
+        }
+
         Builder expiresAt(Instant expiresAt) {
             this.expiresAt = expiresAt;
             return this;

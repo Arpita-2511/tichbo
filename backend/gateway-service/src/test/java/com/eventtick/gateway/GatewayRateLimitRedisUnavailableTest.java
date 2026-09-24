@@ -16,11 +16,13 @@ import java.net.ServerSocket;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 11: what happens when Redis itself is unreachable. All routes point
- * at the working {@link StubUpstream}; only {@code spring.data.redis.*}
+ * Phase 11/12: what happens when Redis itself is unreachable. All routes
+ * point at the working {@link StubUpstream}; only {@code spring.data.redis.*}
  * points at a port that was free a moment ago and now has nothing listening,
  * so the connection genuinely fails (the same "real refused connection"
- * pattern {@code GatewayUpstreamFailureTest} uses for an upstream).
+ * pattern {@code GatewayUpstreamFailureTest} uses for an upstream). The
+ * dynamic policy matrix itself is irrelevant here — whichever policy would
+ * have applied, Redis being down means every check fails open the same way.
  *
  * <p>{@link org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter}
  * fails open on a Redis error — this test exists to pin that down as
@@ -46,10 +48,6 @@ class GatewayRateLimitRedisUnavailableTest {
         StubUpstream.routeEverythingTo(registry, STUB.url());
         registry.add("spring.data.redis.host", () -> "127.0.0.1");
         registry.add("spring.data.redis.port", () -> DEAD_REDIS_PORT);
-        // A small, tripped-over policy: if this were failing CLOSED instead of
-        // open, even one request would show it.
-        registry.add("spring.cloud.gateway.redis-rate-limiter.replenish-rate", () -> 1);
-        registry.add("spring.cloud.gateway.redis-rate-limiter.burst-capacity", () -> 1);
     }
 
     @Autowired

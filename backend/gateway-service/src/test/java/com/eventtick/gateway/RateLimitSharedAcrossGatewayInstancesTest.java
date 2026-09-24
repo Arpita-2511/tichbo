@@ -16,7 +16,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 11: proves the rate-limit bucket lives in Redis, not in this
+ * Phase 11/12: proves the rate-limit bucket lives in Redis, not in this
  * process's memory. It actually runs <b>two</b> separate gateway instances —
  * two full Spring contexts, two embedded Netty servers on two random ports —
  * against the same embedded {@link TestRedis} and the same
@@ -63,15 +63,18 @@ class RateLimitSharedAcrossGatewayInstancesTest {
     }
 
     private ConfigurableApplicationContext startGatewayInstance() {
+        // GET /api/users/me is the USER category; the tokens below default to
+        // plan=Free (TestTokens' own default), so USER.FREE is the policy that
+        // actually applies — override just that one cell.
         List<String> props = new ArrayList<>(List.of(
                 "server.port=0",
                 "spring.data.redis.host=" + redis.host(),
                 "spring.data.redis.port=" + redis.port(),
-                "spring.cloud.gateway.redis-rate-limiter.replenish-rate=1",
-                "spring.cloud.gateway.redis-rate-limiter.burst-capacity=" + BURST_CAPACITY,
+                "eventtick.rate-limit.policies.USER.FREE.replenish-rate=1",
+                "eventtick.rate-limit.policies.USER.FREE.burst-capacity=" + BURST_CAPACITY,
                 // Equal to burst-capacity: one call drains the whole bucket (see
                 // the class Javadoc for why).
-                "spring.cloud.gateway.redis-rate-limiter.requested-tokens=" + BURST_CAPACITY,
+                "eventtick.rate-limit.policies.USER.FREE.requested-tokens=" + BURST_CAPACITY,
                 "jwt.secret=" + TestTokens.SECRET,
                 "jwt.issuer=" + TestTokens.ISSUER,
                 "jwt.audience=" + TestTokens.AUDIENCE));

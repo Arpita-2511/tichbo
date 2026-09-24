@@ -10,11 +10,14 @@ import reactor.core.publisher.Mono;
 import java.net.InetSocketAddress;
 
 /**
- * Decides which rate-limit bucket a request belongs to, per the flow
- * {@code Client -> Gateway -> JWT authentication -> Rate limiter -> Route}:
- * by the time this runs (inside gateway routing, after Spring Security's
- * filter chain has already completed for the request), the reactive
- * security context already holds whatever the JWT layer established.
+ * Resolves the <i>identity</i> half of a rate-limit bucket key — who is
+ * calling, independent of which policy applies to them (see
+ * {@code RateLimitPolicyResolver} for the other half, "which policy", and
+ * {@code RateLimitingGlobalFilter} for how the two are combined into one
+ * Redis key). By the time this runs (inside gateway routing, after Spring
+ * Security's filter chain has already completed for the request), the
+ * reactive security context already holds whatever the JWT layer
+ * established.
  *
  * <ul>
  *   <li><b>Authenticated</b> (the request carried a JWT that Phase 7.3

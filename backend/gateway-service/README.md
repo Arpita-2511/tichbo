@@ -15,9 +15,10 @@ never directly to `user-service`, `catalog-service`, or `booking-service`
   "Current status".
 - **Coarse-grained authorization** — role checks at the edge; fine-grained
   resource authorization stays in each business service.
-- **Rate limiting** — Redis-backed. **Static policy implemented (Phase 11)**
-  — see "Current status". Per user/plan/route-group **dynamic** limits
-  (FR-26–FR-32) are Phase 12, not yet implemented.
+- **Rate limiting** — Redis-backed. **Static policy (Phase 11), then
+  dynamic per-category/plan/role policy selection (Phase 12), both
+  implemented** — see "Current status". Runtime/admin-configurable policy
+  management (part of FR-31) remains not implemented.
 - **Request ID generation/propagation** and **structured request logging**.
   **Implemented (Phase 7.4)** — see "Current status".
 - **Upstream timeouts** so a slow/unavailable service can't hang requests
@@ -167,30 +168,6 @@ forwarded anywhere.
   multiple gateway instances pointed at the same Redis correctly share one
   limit per key; an in-memory counter would let each instance grant its own
   separate allowance, which is explicitly not what's implemented.
-- **Key strategy** (`com.eventtick.gateway.ratelimit.RateLimitKeyResolver`):
-  a request with a JWT that Phase 7.3 validated is keyed by the token's
-  `sub` claim (`user:<uuid>`) — one bucket per user regardless of device or
-  IP. Everything else — the public `register`/`login` endpoints, or any
-  other unauthenticated request — is keyed by the caller's TCP source
-  address (`ip:<address>`), **not** a client-supplied header such as
-  `X-Forwarded-For`: there is no trusted reverse proxy in front of the
-  gateway in this local-development setup, so a client-supplied header
-  would let an attacker pick a fresh bucket for every request just by
-  changing it.
-- **Initial static policy** (`spring.cloud.gateway.redis-rate-limiter.*`,
-  read by `RateLimitingGlobalFilter`, one shared numeric policy for every
-  route — separated only by the key above, not by route or plan):
-
-  | Property | Default | Env override | Meaning |
-  |---|---|---|---|
-  | `replenish-rate` | `5` | `RATE_LIMIT_REPLENISH_RATE` | tokens refilled per second (steady-state rate) |
-  | `burst-capacity` | `10` | `RATE_LIMIT_BURST_CAPACITY` | bucket size — the most a caller can do in one burst |
-  | `requested-tokens` | `1` | `RATE_LIMIT_REQUESTED_TOKENS` | cost of a single request |
-
-  Deliberately generous for local development and deliberately simple —
-  everyone gets the same numeric policy regardless of plan or role. Phase 12
-  (dynamic rate limiting) is expected to replace this with per-plan/adaptive
-  policies; nothing here should be read as tuned for production traffic.
 - **If Redis is unreachable or errors,** `RedisRateLimiter` **fails open**:
   the request is treated as allowed, not blocked, and the failure is only
   logged (at Spring Cloud Gateway's own debug level) — a rate-limiter outage
@@ -212,9 +189,130 @@ forwarded anywhere.
   below. Nothing else in the gateway depends on Redis, and the gateway
   starts and serves traffic normally (fail-open, as above) without one.
 
-Not implemented yet: dynamic/per-plan/adaptive policies, admin-configurable
-limits, and anything load-based — all Phase 12. This is authentication +
-static rate limiting only.
+Phase 11's *policy* — a single shared numeric limit for every request,
+regardless of who or what — is superseded by Phase 12 below. Everything
+above this paragraph (the mechanism: gateway-side, Redis-backed, fail-open,
+same 429 shape) is unchanged and still exactly how Phase 12 works too.
+
+**Phase 12 — dynamic policy selection.** The one static policy is replaced
+by a policy chosen per request from two independent inputs — what kind of
+request it is, and who is making it:
+
+```
+Client -> Gateway -> JWT authentication -> Dynamic policy resolution -> Redis token bucket -> Backend service
+```
+
+- **Request category** (`com.eventtick.gateway.ratelimit.RequestCategoryClassifier`,
+  a pure function of the path, independent of Spring Cloud Gateway route
+  ids so it can't drift from them silently):
+
+  | Category | Path prefix |
+  |---|---|
+  | `AUTH` | `/api/auth/**` |
+  | `CATALOG` | `/api/catalog/**` |
+  | `BOOKING` | `/api/bookings/**` |
+  | `USER` | `/api/users/**` |
+  | `UNKNOWN` | anything else |
+
+- **User tier** (`com.eventtick.gateway.ratelimit.UserTierResolver`), from
+  the **validated** JWT's claims only — never a client-supplied header,
+  query parameter, or body field (an `X-Plan: PRO` header is simply never
+  read):
+  - no authenticated JWT on the request → `PUBLIC`;
+  - `role=ADMIN` → `ADMIN`, **regardless of the account's plan** — role and
+    plan are two independent columns in the User Service's data model (a
+    `UserRole` enum and a `plans` foreign key), so an admin account's plan
+    claim is deliberately not consulted once the role claim says `ADMIN`;
+  - otherwise, the `plan` claim, matched case-insensitively against the
+    plans that actually exist today (`database/migrations/0003_seed_plans.up.sql`:
+    **Free, Pro, Premium** — not the frontend's own unrelated mock data in
+    `eventtick/src/types/index.ts`, which also lists a `VIP` plan that has
+    no backend counterpart) → `FREE`, `PRO`, or `PREMIUM`;
+  - a missing or unrecognized `plan` claim → `FREE`. The gateway's JWT
+    decoder does not structurally validate this claim's shape (only `role`
+    and `sub` are validated), so an unrecognized value is treated as
+    untrusted-in-shape and never silently upgraded to a higher tier.
+- **Policy = `(category, tier)`**, looked up in the matrix below
+  (`com.eventtick.gateway.ratelimit.RateLimitPolicyResolver`). If a specific
+  pair is not configured — most importantly `UNKNOWN` category, but also a
+  defensive catch-all for any gap — the resolver falls back to one
+  explicit, conservative, always-defined fallback policy. **An unrecognized
+  endpoint is never left unlimited.**
+- **Configuration** (`eventtick.rate-limit.*` in `application.yml` — a
+  dedicated namespace, not `spring.cloud.gateway.redis-rate-limiter.*`,
+  which only has room for one flat policy and is retired):
+
+  ```yaml
+  eventtick:
+    rate-limit:
+      policies:
+        <CATEGORY>:
+          <TIER>: { replenish-rate: N, burst-capacity: N }
+      fallback:
+        replenish-rate: N
+        burst-capacity: N
+  ```
+
+  The shipped matrix (illustrative development numbers reasoned from the
+  Eventtick use case, **not production-certified**):
+
+  | Category | FREE | PRO | PREMIUM | ADMIN |
+  |---|---|---|---|---|
+  | AUTH *(public only — see below)* | 2 / 5 | — | — | — |
+  | CATALOG | 8 / 16 | 20 / 40 | 40 / 80 | 100 / 200 |
+  | BOOKING | 4 / 8 | 10 / 20 | 20 / 40 | 50 / 100 |
+  | USER | 5 / 10 | 10 / 20 | 15 / 30 | 50 / 100 |
+
+  (`replenish-rate` requests/sec / `burst-capacity`; `requested-tokens`
+  defaults to 1, a plain per-request cost.) `AUTH` only has a `PUBLIC` entry
+  (`2 / 5`, the strictest policy of all — the public register/login
+  endpoints are a brute-force target, and are IP-keyed, a coarser identity
+  than per-user): `GatewaySecurityConfig`'s public chain never reads the
+  `Authorization` header at all, so an authenticated request can never
+  reach the `AUTH` category in practice. Reasoning behind the shape:
+  `CATALOG` (read-heavy, cheap) is the most generous category at every
+  tier; `BOOKING` (write-heavy, seat-lock contention) is the strictest
+  authenticated category; `USER` sits in between; across tiers, `PRO` is
+  roughly 2–2.5× `FREE`, `PREMIUM` roughly 2× `PRO`, and `ADMIN` is
+  generously high everywhere — for operational/support work, not as a
+  bypass. The `fallback` policy (`2 / 5`) is as strict as `AUTH:PUBLIC`.
+  Changing any of this needs a restart (read once at startup); an admin
+  API/UI for runtime policy changes is explicitly out of scope for this
+  phase (Phase 13+).
+- **Bucket key design** (`com.eventtick.gateway.ratelimit.RateLimitingGlobalFilter`):
+  a concrete technical finding shaped this. Reading Spring Cloud Gateway
+  4.1.5's own source shows `RedisRateLimiter.isAllowed(routeId, id)` uses
+  `routeId` *only* to pick which `Config` (the numbers) to charge against —
+  the actual Redis key is built from `id` alone. Passing just `user:<uuid>`
+  for every policy would therefore let two different policies applied to
+  the same caller (say, a `CATALOG` request and a `BOOKING` request from
+  the same user) silently share one bucket. To prevent that, the key
+  actually used is **`<policyId>:<identity>`** — e.g. `CATALOG:PRO:user:<uuid>`
+  — so `FREE`-catalog, `PRO`-catalog, and `FREE`-booking for the same user
+  are three separate buckets, never one. The identity half
+  (`user:<uuid>`/`ip:<address>`) is unchanged from Phase 11
+  (`RateLimitKeyResolver`).
+- **Registering many policies with the native `RedisRateLimiter`:** the
+  same technique Phase 11 used for its one policy — every policy in the
+  matrix (plus the fallback) is registered directly on the limiter's own
+  config map at startup, since `isAllowed` requires an entry to already
+  exist for whatever id it is given.
+- **Why a `WebFilter`, not a `GlobalFilter` (a Phase 11 bug, found and fixed
+  while testing the fallback):** a Spring Cloud Gateway `GlobalFilter` only
+  runs once a route has matched — for a genuinely unrecognized path,
+  `RoutePredicateHandlerMapping` finds no handler at all, so the filter
+  chain that runs `GlobalFilter`s never executes, and Phase 11's
+  `GlobalFilter`-based limiter silently never rate-limited unrouted paths.
+  It is now a plain `WebFilter` (the same fix Phase 7.4's
+  `RequestIdWebFilter` already made for the analogous 401/404 problem),
+  ordered to run after Spring Security's chain (`order -50`, Security
+  itself is `-100`) so the security context is populated, but for every
+  request regardless of routing outcome.
+
+Not implemented in this phase: admin-configurable or database-backed
+runtime policy management, adaptive/system-load-based limiting, and
+machine-learning-based rate limiting. All are explicitly future work, not
+Phase 12.
 
 ### Local Redis for development
 

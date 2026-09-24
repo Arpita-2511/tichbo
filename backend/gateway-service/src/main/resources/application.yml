@@ -21,26 +21,6 @@ spring:
 
   cloud:
     gateway:
-      # Phase 11: the initial static rate-limit policy, applied uniformly to
-      # every request that reaches routing (see RateLimitingGlobalFilter) —
-      # separated only by *who* is calling (RateLimitKeyResolver: one bucket
-      # per authenticated user, one per IP for everyone else), not by route
-      # or plan. Deliberately generous for local development: enough for a
-      # page load's handful of calls without tripping during normal manual
-      # testing, while still being small enough to demonstrate and test the
-      # limit being hit. Phase 12 (dynamic rate limiting) is expected to
-      # replace this with per-plan/adaptive policies; nothing here should be
-      # read as tuned for production traffic.
-      #
-      # replenish-rate: tokens refilled per second (steady-state rate).
-      # burst-capacity: bucket size — the most a caller can do in one burst
-      # before being limited to the replenish rate.
-      # requested-tokens: cost of a single request; 1 keeps this a plain
-      # per-request limit rather than weighting some calls more than others.
-      redis-rate-limiter:
-        replenish-rate: ${RATE_LIMIT_REPLENISH_RATE:5}
-        burst-capacity: ${RATE_LIMIT_BURST_CAPACITY:10}
-        requested-tokens: ${RATE_LIMIT_REQUESTED_TOKENS:1}
       # Phase 7.2: CORS for the browser frontend, which now talks to the
       # gateway instead of the services. The gateway answers preflight
       # (OPTIONS) requests itself and adds CORS headers to real responses.
@@ -132,6 +112,81 @@ jwt:
   secret: ${JWT_SECRET:dev-only-insecure-secret-change-before-any-real-deployment-0123456789}
   issuer: ${JWT_ISSUER:eventtick-user-service}
   audience: ${JWT_AUDIENCE:eventtick-clients}
+
+# Phase 12: the dynamic rate-limit policy matrix — see
+# ratelimit.RateLimitPolicyResolver for exactly how a request resolves to one
+# of these. A dedicated namespace, not spring.cloud.gateway.redis-rate-limiter
+# (Phase 11's, now retired): that one only holds a single flat policy, with
+# no structure for "many named policies". These are illustrative development
+# numbers reasoned from the Eventtick use case below — not production-
+# certified — and are read once at startup (ratelimit.RateLimitingGlobalFilter
+# registers every one of them on the RedisRateLimiter bean up front); changing
+# them needs a restart, same as Phase 11. Policy changes through an admin
+# API/UI are explicitly out of scope for this phase.
+#
+# Shape: policies.<CATEGORY>.<TIER>.{replenish-rate,burst-capacity,requested-tokens}
+# CATEGORY: AUTH | CATALOG | BOOKING | USER (see RequestCategoryClassifier for
+# the path prefixes each one covers). TIER: PUBLIC | FREE | PRO | PREMIUM |
+# ADMIN (see UserTier / RateLimitPolicyResolver for how a request resolves to
+# one). requested-tokens defaults to 1 (a plain per-request limit) and is
+# omitted below since nothing in this matrix needs a different value.
+#
+# Only the combinations that can actually happen today are listed:
+#   - AUTH only has a PUBLIC entry. GatewaySecurityConfig's public chain
+#     (POST /api/auth/register|login) never reads the Authorization header at
+#     all, so an authenticated request can never reach the AUTH category —
+#     FREE/PRO/PREMIUM/ADMIN x AUTH would be unreachable dead configuration.
+#     If that ever changes, resolution falls back to `fallback` below rather
+#     than failing, but that fallback is deliberately strict.
+#   - CATALOG/BOOKING/USER don't have a PUBLIC entry, for the same reason in
+#     reverse: those three routes require a valid JWT (deny-by-default), so
+#     an unauthenticated caller can never reach them.
+#
+# Reasoning behind the numbers (replenish-rate = steady requests/second,
+# burst-capacity = the most a caller can do in one burst):
+#   - AUTH/PUBLIC is the strictest policy of all: login/register are the
+#     prime credential-stuffing/brute-force target, and are keyed by IP
+#     (RateLimitKeyResolver), which is coarser than a per-user key, so it
+#     also protects against one noisy IP affecting nothing else.
+#   - CATALOG is read-heavy and cheap (content/venue/show browsing), so it is
+#     the most generous category at every tier.
+#   - BOOKING is write-heavy and contention-sensitive (seat holds), so it is
+#     the strictest authenticated category — generous enough for a normal
+#     checkout flow's handful of calls, not for hammering seat locks.
+#   - USER (the caller's own account, e.g. /api/users/me) is called rarely
+#     per session, so it sits between AUTH and CATALOG.
+#   - Across tiers: PRO is roughly 2-2.5x FREE, PREMIUM roughly 2x PRO, and
+#     ADMIN is generously high everywhere it applies — for operational/support
+#     work, not because admin traffic is exempt from limiting altogether.
+eventtick:
+  rate-limit:
+    policies:
+      AUTH:
+        PUBLIC: { replenish-rate: 2, burst-capacity: 5 }
+      CATALOG:
+        FREE: { replenish-rate: 8, burst-capacity: 16 }
+        PRO: { replenish-rate: 20, burst-capacity: 40 }
+        PREMIUM: { replenish-rate: 40, burst-capacity: 80 }
+        ADMIN: { replenish-rate: 100, burst-capacity: 200 }
+      BOOKING:
+        FREE: { replenish-rate: 4, burst-capacity: 8 }
+        PRO: { replenish-rate: 10, burst-capacity: 20 }
+        PREMIUM: { replenish-rate: 20, burst-capacity: 40 }
+        ADMIN: { replenish-rate: 50, burst-capacity: 100 }
+      USER:
+        FREE: { replenish-rate: 5, burst-capacity: 10 }
+        PRO: { replenish-rate: 10, burst-capacity: 20 }
+        PREMIUM: { replenish-rate: 15, burst-capacity: 30 }
+        ADMIN: { replenish-rate: 50, burst-capacity: 100 }
+    # Used whenever a request's (category, tier) pair is not one of the
+    # combinations above — most notably an unrecognized path
+    # (RequestCategory.UNKNOWN), but also a defensive catch-all for any gap
+    # in the matrix. Deliberately as strict as AUTH/PUBLIC: an unrecognized
+    # situation gets the most conservative treatment, never the most
+    # generous, and is never left unlimited.
+    fallback:
+      replenish-rate: 2
+      burst-capacity: 5
 
 server:
   port: 8080
