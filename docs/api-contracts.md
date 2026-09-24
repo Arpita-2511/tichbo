@@ -8,8 +8,11 @@ under `backend/catalog-service` and `backend/booking-service`), but
 documenting those retroactively is out of scope for this pass — this file
 should grow to cover them later rather than attempting that here.
 
-All endpoints below are served directly by `user-service` on port `8081`
-(no API Gateway exists yet — see `docs/architecture.md` §44).
+All endpoints below are implemented by `user-service` (port `8081`) and are
+reached through the API Gateway on port `8080`, which forwards
+`/api/auth/**` and `/api/users/**` to it unchanged — so the same paths work
+against either `http://localhost:8080` (what the frontend uses) or
+`http://localhost:8081` (direct, e.g. for debugging).
 
 ---
 
@@ -129,7 +132,7 @@ Never returned: `password`, `passwordHash`, or any other internal field.
 
 ## CORS (browser clients)
 
-Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) can call `user-service` (`http://localhost:8081`) from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent.
+Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.
 
 - Allowed origins come from `cors.allowed-origins` (env: `CORS_ALLOWED_ORIGINS`, comma-separated; default `http://localhost:5173,http://127.0.0.1:5173`). Never `*`. If Vite falls back to another port (e.g. 5174), set the variable to match.
 - Only `GET`, `POST`, `OPTIONS`; only the `Authorization` and `Content-Type` request headers; no credentials/cookies (auth is the `Authorization: Bearer` header).
@@ -142,7 +145,7 @@ Once an API Gateway fronts these services, CORS should be configured there inste
 
 ## Frontend integration (Phase 6)
 
-`eventtick/src/services/api.ts` calls these endpoints directly (`VITE_USER_SERVICE_URL`, default `http://localhost:8081`):
+`eventtick/src/services/api.ts` calls these endpoints through the API Gateway. The base URL is the gateway's origin only, without `/api` (the request paths already start with `/api/...`): `VITE_API_BASE_URL`, default `http://localhost:8080`.
 
 - **Signup:** `POST /api/auth/register`, then an automatic `POST /api/auth/login` with the same credentials (registration returns no token). Only `name`, `email`, `password` are sent — there is no `phone` field in the backend contract.
 - **Login:** the returned `accessToken` is kept in `localStorage` (`eventtick.accessToken`). Passwords are never stored.

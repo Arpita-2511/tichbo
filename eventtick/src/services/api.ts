@@ -2,7 +2,7 @@
 // Eventtick API Service Layer
 //
 // Authentication (login / signup / logout / getCurrentUser) is REAL: it
-// talks to user-service over HTTP (see "Auth" below). Everything else
+// goes through the API Gateway to user-service (see "Auth" below). Everything else
 // still returns mock data with simulated async delay, until its own
 // backend integration phase.
 //
@@ -27,9 +27,12 @@ import {
 } from '../data/mockData';
 
 // ─── API Client Configuration ─────────────────────────────────────────────────
-// When connecting to the real backend, update BASE_URL and add auth headers.
-
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api';
+// BASE_URL is the API Gateway's ORIGIN — scheme + host + port only. It must
+// NOT include "/api": the request paths below already start with "/api/...",
+// and the gateway forwards them to the services unchanged. Override with
+// VITE_API_BASE_URL (e.g. when the gateway is deployed elsewhere); a
+// trailing slash is tolerated.
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
 
 // Simulate network latency
 const delay = (ms = 400) => new Promise(resolve => setTimeout(resolve, ms));
@@ -168,9 +171,9 @@ export async function cancelBooking(_id: string): Promise<boolean> {
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
-// Talks to user-service directly. There is no API Gateway yet; once there is,
-// this collapses into BASE_URL. Override with VITE_USER_SERVICE_URL.
-const USER_SERVICE_URL = import.meta.env.VITE_USER_SERVICE_URL || 'http://localhost:8081';
+// Auth requests go to the API Gateway (BASE_URL, :8080), which routes
+// /api/auth/** and /api/users/** to user-service. The frontend never calls a
+// backend service directly.
 
 // The JWT lives in localStorage — simple and fine for a local project. The
 // trade-off: any script running on the page can read it (XSS). Passwords are
@@ -220,7 +223,7 @@ async function request<T>(
 
   let response: Response;
   try {
-    response = await fetch(`${USER_SERVICE_URL}${path}`, {
+    response = await fetch(`${BASE_URL}${path}`, {
       method: options.method ?? 'GET',
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,

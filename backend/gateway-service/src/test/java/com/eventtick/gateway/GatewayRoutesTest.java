@@ -77,8 +77,16 @@ class GatewayRoutesTest {
 
     @Test
     void routesForwardThePathUnchanged() {
-        // Backends already serve /api/... themselves; any filter here
-        // (StripPrefix, RewritePath, ...) would break that.
-        assertThat(routes()).allSatisfy(route -> assertThat(route.getFilters()).isEmpty());
+        // Backends already serve /api/... themselves; a StripPrefix or
+        // RewritePath filter here would break that. The only filter is the
+        // CORS-header dedupe default filter (Phase 7.2), which touches
+        // response headers, never the request path.
+        assertThat(routes()).allSatisfy(route -> {
+            assertThat(route.getFilters()).hasSize(1);
+            assertThat(route.getFilters().get(0).toString())
+                    .contains("DedupeResponseHeader")
+                    .doesNotContain("StripPrefix")
+                    .doesNotContain("RewritePath");
+        });
     }
 }

@@ -7,8 +7,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * Entry point for the Eventtick API Gateway.
  *
  * <p>Phase 7.1: basic path-based routing to the three backend services,
- * configured in {@code application.yml}. No filters, authentication, or
- * rate limiting yet — those are added in later phases (see
+ * configured in {@code application.yml}, plus (Phase 7.2) CORS for the
+ * browser frontend. No authentication or rate limiting yet — those are
+ * added in later phases (see
  * {@code docs/architecture.md}, section "API Gateway").
  */
 @SpringBootApplication

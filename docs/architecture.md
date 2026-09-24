@@ -1931,15 +1931,16 @@ Completed, beyond the original Phase 1 scope below — see
   management") are explicitly deferred — not yet implemented; access-token
   authentication alone is the complete, tested increment for now.
 * Eventtick frontend prototype (§4). Its authentication (signup, login,
-  session restore, logout) now calls the User Service directly over HTTP
-  (no Gateway in between yet); everything else is still mock data.
+  session restore, logout) now goes through the API Gateway to the User
+  Service (Phase 7.2); everything else is still mock data.
 
 The API Gateway (§5–§6) — the project's stated primary engineering
 focus — is only started: **basic path-based routing** to the three
-services is implemented (Phase 7.1; `backend/gateway-service`), but
-nothing calls it yet — everything above was built and is still used
-directly against each service. There is no JWT validation at the edge,
-rate limiting, or dynamic rate limiting in front of them yet.
+services (Phase 7.1) and **CORS for the browser frontend** (Phase 7.2) are
+implemented in `backend/gateway-service`, and the frontend's authentication
+now goes through it. There is still no JWT validation at the edge, rate
+limiting, or dynamic rate limiting, and the mock-data parts of the
+frontend don't use it yet.
 
 Original Phase 1 — Requirements & Architecture — completed:
 

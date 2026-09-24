@@ -4,6 +4,36 @@ spring:
 
   cloud:
     gateway:
+      # Phase 7.2: CORS for the browser frontend, which now talks to the
+      # gateway instead of the services. The gateway answers preflight
+      # (OPTIONS) requests itself and adds CORS headers to real responses.
+      # Deliberately narrow: only the listed origins (never "*"), only the
+      # methods/headers the frontend's API calls use, and no credentials —
+      # auth is an "Authorization: Bearer" header, not a cookie, so
+      # allowCredentials stays false.
+      globalcors:
+        cors-configurations:
+          '[/api/**]':
+            allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+            allowed-methods:
+              - GET
+              - POST
+              - OPTIONS
+            allowed-headers:
+              - Authorization
+              - Content-Type
+            allow-credentials: false
+            max-age: 3600
+
+      # user-service still has its own CORS config (kept as defense-in-depth),
+      # so a proxied response would otherwise carry these headers twice —
+      # once added by the gateway, once by user-service — and browsers reject
+      # a response with duplicate Access-Control-Allow-Origin values. This
+      # keeps the first copy. It only touches those two response headers; it
+      # does not change request paths.
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
+
       # Phase 7.1: plain path-based routing. No filters on purpose — the
       # backend services already serve these exact /api/... paths, so the
       # original path is forwarded unchanged (no StripPrefix/RewritePath).

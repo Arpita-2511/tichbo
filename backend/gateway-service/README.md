@@ -35,10 +35,27 @@ these exact `/api/...` paths):
 
 Anything else returns `404`. Upstream URLs are fixed to localhost for now.
 
+**Phase 7.2 — the frontend goes through the gateway.** The Eventtick
+frontend (`http://localhost:5173`) sends its authentication requests to
+this gateway (`http://localhost:8080`), not to `user-service`.
+
+CORS is configured here (`spring.cloud.gateway.globalcors`, path
+`/api/**`): allowed origins `http://localhost:5173` and
+`http://127.0.0.1:5173` (override with `CORS_ALLOWED_ORIGINS`, never `*`),
+methods `GET`/`POST`/`OPTIONS`, headers `Authorization`/`Content-Type`,
+credentials off (auth is a Bearer header, not a cookie). The gateway
+answers preflight requests itself.
+
+`user-service` keeps its own CORS config as defense-in-depth. That means a
+proxied response would carry `Access-Control-Allow-Origin` twice — once
+from each — and browsers reject duplicates, so a `DedupeResponseHeader`
+default filter keeps the first copy. It only touches those response
+headers, never the request path.
+
 Not implemented yet: JWT validation at the edge, rate limiting (Redis),
-request IDs, logging filters, timeouts, and CORS at the gateway. The
-frontend still calls `user-service` directly, not this gateway — and
-until it does, CORS is handled by `user-service` itself.
+request IDs, logging filters, and timeouts. Only `GET`/`POST` are allowed
+cross-origin — `PUT`/`DELETE` (needed by the catalog admin APIs) must be
+added when the frontend starts calling them.
 
 ## Tech
 
