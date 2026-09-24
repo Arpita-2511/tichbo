@@ -2118,6 +2118,111 @@ Original Phase 1 — Requirements & Architecture — completed:
 
 The architecture has now been generalized from a movie-specific application to a multi-category ticket-booking platform.
 
+---
+
+# 45. Admin Dashboard Architecture (Phase 13 — Design Only)
+
+**Nothing in this section is implemented.** It documents the intended
+architecture for the Admin Dashboard ahead of implementation — no
+controller, service, repository, database migration, or frontend code
+exists for it yet. See `docs/requirements.md` §15 (FR-35–FR-40) for the
+corresponding numbered requirements.
+
+## 45.1 Purpose and Access
+
+The Admin Dashboard is an operational interface for users whose JWT `role`
+claim is `ADMIN` — not a new role or a new kind of account, the same
+`ADMIN` already defined in §4.2/§23–§24 and carried in the JWT `role`
+claim since the User Service issued its first token.
+
+Access is enforced through the **existing** JWT authentication/authorization
+architecture, not a parallel one:
+
+```text
+Admin Frontend
+      │
+      ▼
+API Gateway :8080
+      │
+      ├── JWT authentication (§6.2, §23)      — valid token required
+      ├── Coarse-grained authorization (§6.3) — role must be ADMIN
+      │      │
+      │      ├── CUSTOMER  → 403 Forbidden
+      │      └── no/invalid token → 401 Unauthorized
+      │
+      ▼
+   ADMIN request forwarded to the owning service
+```
+
+A `CUSTOMER` request to an admin-only operation receives `403 Forbidden`;
+an unauthenticated request receives `401 Unauthorized` — the same
+distinction, and the same response shape (`status`/`error`/`message`/
+`requestId`/`timestamp`), Phase 7.3/7.4 already established for every
+other protected endpoint. No separate error format is introduced.
+
+## 45.2 Dashboard Capabilities
+
+| Capability | Description |
+|---|---|
+| Overview / statistics | Summary counts (users, content/shows, bookings) and current rate-limit activity, each sourced from the service that owns it — see §45.3. |
+| User management | View/list users; change a user's plan or role. |
+| Event/show management | Create, update, and remove Content, Shows, and Venues. |
+| Booking management | View/list bookings and their status; view seat-hold/booking activity for a show. |
+| Rate-limit visibility | View the active Phase 12 policy matrix and recent rate-limit activity. **Read-only** — see §45.4. |
+
+## 45.3 Service Ownership and Admin API Boundaries
+
+The Admin Dashboard introduces no new service and no new data ownership.
+Every admin operation is served by whichever service already owns that
+data (§17's boundary, unchanged):
+
+```text
+Gateway Service   → routing, JWT enforcement, request correlation,
+                     error handling, rate limiting (unchanged: §6, §19–§22)
+
+User Service      → users, plans
+                     admin operations: list/view users, change plan/role
+
+Catalog Service   → content, venues, seats, shows
+                     admin operations: create/update/remove content,
+                     shows, venues
+
+Booking Service   → show_seats, bookings, booking_seats
+                     admin operations: list/view bookings, view seat-hold
+                     and booking activity
+
+Gateway Service   → rate-limit policy matrix (Phase 12), request/response
+                     metadata
+                     admin operation: view (not edit) the active policy
+                     matrix and recent 429 activity
+```
+
+Concretely, an admin API call is `Admin Frontend -> API Gateway -> the
+owning service`, exactly the same path a customer-facing request already
+takes (§26, §32) — the Gateway does not gain a new role as a data owner,
+and the Admin Dashboard's frontend never talks to a backend service
+directly (consistent with FR-19, Centralized Entry Point).
+
+No `admin-service` is introduced. Admin-only *authorization* is enforced
+once, at the Gateway (§45.1); each service still performs its own
+business-specific validation of the operation itself (§6.3's "coarse
+vs. business-specific" split, unchanged).
+
+## 45.4 Explicit Non-Goals for Phase 13
+
+The following are deliberately out of scope for this phase, to be
+reconsidered only in a later phase if at all:
+
+* A new `admin-service` — admin operations are served by the existing
+  three services (§45.3).
+* Runtime editing of rate-limit policies. The Phase 12 policy matrix
+  remains configuration-driven (`application.yml`/environment variables,
+  restart to change); the dashboard exposes it read-only (§45.2, FR-40).
+  FR-31 (administrative rate-limit configuration) stays unimplemented.
+* Payment, Kafka/event-driven communication, data science/ML, monitoring
+  (§29–§31, §25, §27–§28 remain as previously documented, unaffected by
+  this section), and Docker/deployment changes.
+
 ## Next Phase
 
 The API Gateway (§5–§6):

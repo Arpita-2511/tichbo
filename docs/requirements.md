@@ -716,6 +716,87 @@ The initial dashboard should support:
 
 Additional administrative functionality may be introduced later.
 
+**Implementation status (Phase 13):** the requirements below give this
+section concrete, numbered requirements for the first Admin Dashboard
+increment. **Design only — nothing in this section is implemented yet.**
+No controller, service, repository, database migration, or frontend code
+exists for it. "Rate-limit configuration" above refers to the Phase 12
+policy matrix, which stays configuration-driven (`application.yml`/env
+vars) — Phase 13 adds read-only *visibility* into it, not runtime editing;
+see FR-40.
+
+## FR-35: Admin Dashboard Access Control
+
+The Admin Dashboard shall be an operational interface available only to
+authenticated users whose JWT `role` claim is `ADMIN`.
+
+Access control shall be enforced through the existing JWT
+authentication/authorization architecture (§6.2–§6.3, §23–§24) — the same
+gateway-level JWT validation and role claim every other protected endpoint
+already relies on, not a separate mechanism.
+
+A `CUSTOMER` user shall receive `403 Forbidden` for any admin-only
+operation. An unauthenticated request shall receive `401 Unauthorized`,
+consistent with FR-21.
+
+---
+
+## FR-36: Admin Overview and Statistics
+
+The Admin Dashboard shall present summary operational statistics: at
+minimum, counts of users, content/shows, and bookings, and a view of
+current traffic/rate-limit activity (FR-40).
+
+Each figure shall be sourced from the service that owns the underlying
+data (see the ownership boundary in `docs/architecture.md` §45.3) — the
+dashboard itself shall not maintain its own copy of business data.
+
+---
+
+## FR-37: Admin User Management
+
+The Admin Dashboard shall allow an administrator to view and manage user
+accounts: at minimum, list users, view a user's details, and change a
+user's plan or role.
+
+This capability is owned by User Service (users, plans — §7, §17).
+
+---
+
+## FR-38: Admin Event/Show Management
+
+The Admin Dashboard shall allow an administrator to manage bookable
+content: at minimum, create/update/remove Content, Shows, and Venues.
+
+This capability is owned by Catalog Service (content, venues, seats,
+shows — §8–§12, §17).
+
+---
+
+## FR-39: Admin Booking Management
+
+The Admin Dashboard shall allow an administrator to view and monitor
+bookings: at minimum, list bookings, view a booking's details and status,
+and view seat-hold/booking activity for a show.
+
+This capability is owned by Booking Service (bookings, booking_seats,
+show_seats — §13–§16, §17).
+
+---
+
+## FR-40: Admin Rate-Limit Visibility
+
+The Admin Dashboard shall allow an administrator to *view* the active
+rate-limit policy matrix and, where available, recent rate-limit activity
+(e.g. requests rejected with `429`) — sourced from Gateway Service
+(§6.4, §19–§22, and the Phase 11/12 implementation).
+
+The Admin Dashboard shall **not** allow editing rate-limit policies at
+runtime in this phase. Policies remain configuration-driven, exactly as
+Phase 12 implemented them (`application.yml`/environment variables, a
+restart to change); FR-31 (administrative rate-limit configuration)
+remains explicitly unimplemented and out of scope for Phase 13.
+
 ---
 
 # 16. Monitoring Requirements

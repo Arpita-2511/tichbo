@@ -39,12 +39,15 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  *   for now also {@code /api/catalog/**} and {@code /api/bookings/**}.
  * </ol>
  *
- * <p><b>Authentication only, no authorization policy.</b> There are no
- * role or ownership rules here: any valid token, CUSTOMER or ADMIN, passes.
- * Who may do what on catalog/booking is a later decision (and resource
- * ownership stays with the owning service — see architecture §6.3).
- * The {@code role} claim is still exposed as a {@code ROLE_*} authority for
- * when those rules are added.
+ * <p><b>Authorization.</b> {@code /api/admin/**} additionally requires the
+ * {@code ROLE_ADMIN} authority (Phase 13.3) — a {@code CUSTOMER} token gets
+ * {@code 403} from {@link JsonAccessDeniedHandler}, not {@code 401}: it
+ * authenticated successfully, it just isn't allowed here. Everywhere else,
+ * there are still no role or ownership rules: any valid token, CUSTOMER or
+ * ADMIN, passes. Who may do what on catalog/booking is a later decision
+ * (and resource ownership stays with the owning service — see architecture
+ * §6.3). The {@code role} claim is exposed as a {@code ROLE_*} authority for
+ * exactly this kind of rule.
  *
  * <p>The {@code Authorization} header is forwarded to the backend
  * unchanged; user-service still validates it itself for {@code /me}
@@ -106,7 +109,12 @@ public class GatewaySecurityConfig {
                 .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
                 .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
-                .authorizeExchange(exchanges -> exchanges.anyExchange().authenticated())
+                .authorizeExchange(exchanges -> exchanges
+                        // Phase 13.3: checked before the blanket rule below, so an
+                        // authenticated CUSTOMER gets 403 (authenticated, not
+                        // authorized) rather than the generic authenticated() pass.
+                        .pathMatchers("/api/admin/**").hasAuthority("ROLE_ADMIN")
+                        .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .authenticationEntryPoint(unauthorized)
                         .accessDeniedHandler(forbidden)
