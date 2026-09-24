@@ -1914,11 +1914,30 @@ updated_at
 
 # 44. Current Status
 
-Current project phase:
+Completed, beyond the original Phase 1 scope below — see
+`docs/requirements.md` §25 for the equivalent detailed list:
 
-**Phase 1 — Requirements & Architecture**
+* Full PostgreSQL schema (`database/migrations/0001`–`0010`), matching
+  the ownership boundary in §17.
+* Backend project structure for all four services (`backend/`), each an
+  independently buildable Spring Boot 3.3.4 / Java 17 Maven project.
+* Catalog Service and Booking Service fully implemented end to end
+  (entities → repositories → services → DTOs → REST controllers →
+  exception handling), manually tested.
+* User Service authentication backend (§23 Authentication Architecture,
+  realized): registration, login, JWT issuance/validation via Spring
+  Security, BCrypt password hashing, `CUSTOMER`/`ADMIN` role authority,
+  authenticated `GET /api/users/me`. Refresh tokens (§7's "refresh-token
+  management") are explicitly deferred — not yet implemented; access-token
+  authentication alone is the complete, tested increment for now.
+* Eventtick frontend prototype (§4), currently on mock data only.
 
-Completed:
+The API Gateway (§5–§6) — the project's stated primary engineering
+focus — has **not** been implemented yet. Everything above was built
+directly against each service; there is no Gateway routing, JWT
+validation at the edge, or dynamic rate limiting in front of them yet.
+
+Original Phase 1 — Requirements & Architecture — completed:
 
 * Project scope
 * High-level requirements
@@ -1936,24 +1955,8 @@ The architecture has now been generalized from a movie-specific application to a
 
 ## Next Phase
 
-**Phase 2 — Database Design + API Contracts**
-
-Phase 2 will define:
-
-1. Database entities
-2. Tables
-3. Primary keys
-4. Foreign keys
-5. Constraints
-6. Relationships
-7. Service database ownership
-8. REST endpoints
-9. HTTP methods
-10. Request bodies
-11. Response bodies
-12. Authentication requirements
-13. Authorization requirements
-14. Error responses
-15. Booking concurrency rules
-
-The database design and API contracts should be finalized before implementation of the major backend services begins.
+Frontend ↔ Authentication integration, then the API Gateway (§5–§6):
+request routing to the three services, JWT validation at the edge, and
+eventually dynamic rate limiting backed by Redis (§19–§22). None of that
+exists yet — the Gateway remains the largest unbuilt piece of the
+project's stated primary objective.

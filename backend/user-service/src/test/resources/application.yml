@@ -9,4 +9,29 @@ spring:
     password:
   jpa:
     hibernate:
-      ddl-auto: none
+      # Tests need real tables to persist/query against, unlike the plain
+      # contextLoads()-only tests the other services still have. This is
+      # scoped to the ephemeral H2 test database ONLY — Hibernate
+      # generates schema here from the entity mappings for test purposes;
+      # src/main/resources/application.yml (the real PostgreSQL
+      # connection) still uses ddl-auto: none and is untouched. This does
+      # not affect the hand-authored migrations in database/migrations/,
+      # which remain the single source of truth for the real schema.
+      ddl-auto: create-drop
+    # Same as src/main/resources/application.yml. Left at Spring's default
+    # (true), the Hibernate session stays open for the whole web request,
+    # which silently hides lazy-loading bugs that break in production.
+    open-in-view: false
+
+# JwtService requires these (@Value, no inline default) — src/main/resources/
+# application.yml is NOT merged with this file on the test classpath (this
+# file replaces it entirely, same as the datasource block above already
+# relies on), so they must be repeated here or JwtService's bean creation
+# fails and takes the whole ApplicationContext down with it. Test-only
+# values, distinct from JwtServiceTest's own separately-constructed
+# JwtService instances (which don't go through Spring at all).
+jwt:
+  secret: test-only-secret-for-the-spring-context-must-be-at-least-32-bytes
+  issuer: eventtick-user-service
+  audience: eventtick-clients
+  expiration-minutes: 60

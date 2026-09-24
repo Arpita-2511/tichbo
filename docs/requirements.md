@@ -1038,11 +1038,33 @@ Each phase should be functional and understandable before introducing the next m
 
 # 25. Requirement Status
 
-Current project phase:
+Completed, beyond the original Phase 1 scope below:
 
-**Phase 1 — Requirements & Architecture**
+* Full PostgreSQL schema (`database/migrations/0001`–`0010`) — plans,
+  users, content, venues, seats, shows, show-specific seat availability,
+  bookings, and booking line items — with service ownership boundaries
+  documented in `docs/architecture.md` §17.
+* Backend project structure for all four services (`backend/`).
+* Catalog Service — entities, repositories, services, DTOs, and REST
+  controllers for Content/Venue/Seat/Show, all implemented and manually
+  tested.
+* Booking Service — entities, repositories, a concurrency-safe service
+  layer (row-level locking on `show_seats`), DTOs, and REST controllers
+  for seat holds and the booking lifecycle, all implemented and manually
+  tested.
+* User Service authentication backend — registration, login, JWT
+  issuance/validation, Spring Security, password hashing (BCrypt),
+  role-based authority (`CUSTOMER`/`ADMIN`), and an authenticated
+  `/api/users/me`. See `docs/api-contracts.md` for the endpoint contract.
+  Refresh tokens are explicitly deferred (see that doc for why).
+* Eventtick frontend prototype (mock data; not yet wired to any backend).
 
-Completed:
+This happened in a different order than the roadmap in §24 originally
+laid out (Catalog/Booking were built before Authentication, not after) —
+noted here rather than silently rewriting §24 to look like it was planned
+that way.
+
+Original Phase 1 — Requirements & Architecture — completed:
 
 * Project scope
 * User roles
@@ -1061,23 +1083,7 @@ The requirements have now been generalized from a movie-focused platform to a mu
 
 ## Next Phase
 
-**Phase 2 — Database Design + API Contracts**
-
-Phase 2 will define:
-
-1. Database entities
-2. Tables
-3. Primary keys
-4. Foreign keys
-5. Constraints
-6. Relationships
-7. Service database ownership
-8. REST endpoints
-9. HTTP methods
-10. Request bodies
-11. Response bodies
-12. Authentication requirements
-13. Authorization requirements
-14. Error responses
-15. Booking concurrency rules
-16. Rate-limit policy structure
+Frontend ↔ Authentication integration (wiring the existing Eventtick
+frontend to real `POST /api/auth/register`, `POST /api/auth/login`, and
+`GET /api/users/me` calls instead of its mock API layer), followed by the
+API Gateway.

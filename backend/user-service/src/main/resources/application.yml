@@ -8,7 +8,7 @@ spring:
     # fall back to environment variables with no hardcoded password.
     url: jdbc:postgresql://localhost:5432/eventtick_db
     username: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:}
+    password: ${DB_PASSWORD}
   jpa:
     # The schema is fully owned by database/migrations/ (see
     # database/README.md). Hibernate must never auto-generate or alter it.
@@ -18,3 +18,14 @@ spring:
 
 server:
   port: 8081
+
+# Phase 5 (Authentication Backend). All overridable via environment
+# variables; the fallback values after ':' are LOCAL-DEV-ONLY and
+# intentionally not secret-grade — never rely on these outside a laptop.
+# jwt.secret must be >= 32 bytes for HS256; the fallback is padded well
+# past that so local dev never hits a WeakKeyException.
+jwt:
+  secret: ${JWT_SECRET:dev-only-insecure-secret-change-before-any-real-deployment-0123456789}
+  issuer: ${JWT_ISSUER:eventtick-user-service}
+  audience: ${JWT_AUDIENCE:eventtick-clients}
+  expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
