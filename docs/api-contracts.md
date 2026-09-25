@@ -246,6 +246,85 @@ No new request/response DTO and no new exception type — this endpoint reuses `
 
 ---
 
+## `GET /api/admin/bookings`
+
+Phase 13.7.1 — the first admin Booking operation. **Owned and implemented by `booking-service`** (port `8083`), the first `booking-service` entry on this page (see the note on `POST /api/admin/content` above — this file otherwise still only covers `user-service`, and `booking-service`'s existing, already-implemented customer-facing REST API — seat map, hold/release, create/confirm/cancel booking, per-user booking list — remains undocumented here, unchanged, and out of scope for this pass).
+
+Admin-only, **read-only** booking monitoring across every user — lists every booking in the system, not scoped to a single `userId` the way `GET /api/bookings?userId=` is. For the Admin Dashboard's booking-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-39). No write path: this phase adds no cancel, confirm, or seat-activity endpoint.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `booking-service` has no Spring Security dependency and performs no role check of its own, the same boundary `POST /api/admin/content`/`PATCH /api/admin/shows/{id}/cancel` above use.
+
+**Query parameters:**
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `page` | `0` | zero-indexed |
+| `size` | `20` | |
+| `sort` | `createdAt,desc` | any `Booking` property, e.g. `sort=totalAmount,asc`; repeatable for multi-field sort |
+
+**Success response — `200 OK`:** Spring's normal `Page` response — no custom pagination wrapper — with `content` made of the existing `BookingResponse` shape (same as `POST /api/bookings`/`GET /api/bookings/{bookingId}`'s response):
+
+```json
+{
+  "content": [
+    {
+      "bookingId": "...", "userId": "...", "showId": "...",
+      "status": "CONFIRMED", "totalAmount": 50.00,
+      "seats": [ { "bookingSeatId": "...", "showSeatId": "...", "priceAtBooking": 25.00 } ],
+      "createdAt": "...", "updatedAt": "..."
+    }
+  ],
+  "totalElements": 1,
+  "totalPages": 1,
+  "number": 0,
+  "size": 20
+}
+```
+
+**Error responses:** `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway** — see above).
+
+No new request/response DTO — this endpoint reuses the existing `BookingResponse`/`BookingSeatDto` exactly as already implemented, via a new `BookingService.listAll(Pageable)` (plain `BookingRepository.findAll(Pageable)`) and a separate `AdminBookingController`.
+
+---
+
+## `GET /api/admin/shows/{showId}/seat-activity`
+
+Phase 13.7.2 — the second admin Booking operation. **Owned and implemented by `booking-service`** (port `8083`), alongside `GET /api/admin/bookings` above.
+
+Admin-only, **read-only** view of a show's current seat/hold/booking state — which `show_seats` rows exist for the show and each one's `AVAILABLE`/`HELD`/`BOOKED` status and price. For the Admin Dashboard's booking-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-39). Reuses the exact same query the customer-facing `GET /api/bookings/shows/{showId}/seats` already uses (`ShowSeatQueryService.getSeatMap`) and its response shape — no new repository query, no new DTO.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `booking-service` has no Spring Security dependency and performs no role check of its own, the same boundary `GET /api/admin/bookings` above uses.
+
+**Path variable:** `showId` — a UUID.
+
+**Request body:** none.
+
+**Success response — `200 OK`:** the existing `SeatMapResponse`/`SeatMapItemDto` shape — same as `GET /api/bookings/shows/{showId}/seats`'s response:
+
+```json
+{
+  "showId": "...",
+  "seats": [
+    { "showSeatId": "...", "seatId": "...", "status": "HELD", "price": 25.00 },
+    { "showSeatId": "...", "seatId": "...", "status": "BOOKED", "price": 25.00 }
+  ]
+}
+```
+
+This shape does not include which booking (if any) currently holds a seat, or seat labels such as section/row/number — the underlying `show_seats` row carries no booking reference, and seat labels live in `catalog-service`'s `seats` table; the existing query does not fetch either, and this phase does not invent new fields beyond what it already provides.
+
+**A show with no `show_seats` rows (unknown or not-yet-seeded `showId`) returns `200 OK` with an empty `seats` list, not `404`** — this matches the existing `GET /api/bookings/shows/{showId}/seats` behavior exactly; the underlying query has no not-found case to report.
+
+**Error responses:** `400 VALIDATION_ERROR` (`showId` isn't a well-formed UUID, the existing `MethodArgumentTypeMismatchException` handling); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway** — see above).
+
+No new request/response DTO — this endpoint reuses the existing `SeatMapResponse`/`SeatMapItemDto`/`ShowSeatQueryService.getSeatMap` exactly as already implemented for `GET /api/bookings/shows/{showId}/seats`, via a separate `AdminShowSeatActivityController`.
+
+---
+
 ## CORS (browser clients)
 
 Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.

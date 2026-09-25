@@ -133,6 +133,26 @@ spring:
           predicates:
             - Path=/api/admin/shows/{id}/cancel
 
+        # Phase 13.7.1: the third admin route, same explicit-per-endpoint
+        # discipline as admin-content/admin-show-cancel — not
+        # /api/admin/bookings/** and not /api/admin/**. Query parameters
+        # (page/size/sort) are not part of the Path predicate and pass
+        # through unaffected.
+        - id: admin-bookings
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/admin/bookings
+
+        # Phase 13.7.2: the fourth admin route, same discipline. {showId} is
+        # a URI template variable (one path segment), so this only ever
+        # matches .../shows/<id>/seat-activity — never a bare
+        # .../shows/<id> and never /api/admin/shows/{id}/cancel (a
+        # different, already-routed literal final segment).
+        - id: admin-show-seat-activity
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/admin/shows/{showId}/seat-activity
+
 # Phase 7.3: how the gateway validates the JWTs issued by user-service. These
 # must match user-service's jwt.secret / jwt.issuer / jwt.audience — same
 # environment variable names, so setting JWT_SECRET once (e.g. in the shell

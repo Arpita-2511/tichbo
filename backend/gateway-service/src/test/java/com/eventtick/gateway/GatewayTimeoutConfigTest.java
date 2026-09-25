@@ -52,7 +52,7 @@ class GatewayTimeoutConfigTest {
 
         assertThat(routes).extracting(Route::getId)
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
-                        "admin-content", "admin-show-cancel");
+                        "admin-content", "admin-show-cancel", "admin-bookings", "admin-show-seat-activity");
         assertThat(routes).allSatisfy(route ->
                 assertThat(route.getMetadata()).as("route %s has no per-route timeout override", route.getId())
                         .doesNotContainKeys("connect-timeout", "response-timeout"));

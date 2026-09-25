@@ -13,6 +13,8 @@ import com.eventtick.booking.repository.BookingRepository;
 import com.eventtick.booking.repository.BookingSeatRepository;
 import com.eventtick.booking.repository.ShowSeatRepository;
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -229,6 +231,21 @@ public class BookingService {
     @Transactional(readOnly = true)
     public Booking getBooking(UUID bookingId) {
         return requireBooking(bookingId);
+    }
+
+    /**
+     * All bookings across every user, for {@code GET /api/admin/bookings}
+     * (Phase 13.7.1). Unlike {@link #getBookingsForUser}, not scoped to one
+     * user — admin-only access is enforced once, at the gateway
+     * ({@code /api/admin/** -> ROLE_ADMIN}), the same boundary every other
+     * admin-only path relies on; no check happens here. Plain
+     * {@link BookingRepository#findAll(Pageable)}: {@link Booking} has no
+     * lazy associations for a response mapper to read (unlike, say,
+     * user-service's {@code User.plan}), so no entity graph is needed.
+     */
+    @Transactional(readOnly = true)
+    public Page<Booking> listAll(Pageable pageable) {
+        return bookingRepository.findAll(pageable);
     }
 
     /**

@@ -15,7 +15,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 7.1 (plus the Phase 13.5.3/13.6.3 admin routes): every route exists, each
+ * Phase 7.1 (plus the Phase 13.5.3/13.6.3/13.7.1/13.7.2 admin routes): every route exists, each
  * request path lands on the right upstream, and nothing rewrites the path
  * (no filters on any route). Does not start the upstream services or send
  * real traffic — it asks the gateway's own route table which route a given
@@ -48,10 +48,10 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyFiveRoutesAreRegistered() {
+    void exactlySevenRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
-                        "admin-content", "admin-show-cancel");
+                        "admin-content", "admin-show-cancel", "admin-bookings", "admin-show-seat-activity");
     }
 
     @Test
@@ -108,6 +108,48 @@ class GatewayRoutesTest {
         // And it must not overlap with the other admin route either.
         assertThat(matchFor("/api/admin/content")).isNotEmpty();
         assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+    }
+
+    @Test
+    void adminBookingsPath_goesToBookingService() {
+        // Phase 13.7.1: a third explicit admin route, same discipline as
+        // admin-content/admin-show-cancel.
+        assertRoutedTo("/api/admin/bookings", "admin-bookings", "http://localhost:8083");
+    }
+
+    @Test
+    void adminBookingsRoute_matchesOnlyThatExactPath_notAnUnrelatedAdminPath() {
+        // Not /api/admin/bookings/** — a future per-booking admin path (if
+        // ever added) must not silently route here, and this must not
+        // overlap with either existing admin route.
+        assertThat(matchFor("/api/admin/bookings/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+    }
+
+    @Test
+    void adminShowSeatActivityPath_goesToBookingService() {
+        // Phase 13.7.2: a fourth explicit admin route, same discipline as
+        // the three above.
+        assertRoutedTo("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seat-activity",
+                "admin-show-seat-activity", "http://localhost:8083");
+    }
+
+    @Test
+    void adminShowSeatActivityRoute_matchesOnlyThatExactShape_notAnUnrelatedAdminPath() {
+        // Not /api/admin/shows/** — a bare show id, and the sibling
+        // admin-show-cancel path (same prefix, different final segment),
+        // must not collide with this route.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seat-activity/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
+        assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
     }
 
     @Test
