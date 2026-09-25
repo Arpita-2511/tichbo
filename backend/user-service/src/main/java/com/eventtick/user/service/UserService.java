@@ -95,4 +95,16 @@ public class UserService {
         user.setRole(newRole);
         return userRepository.save(user);
     }
+
+    /**
+     * {@code GET /api/admin/users/stats} (Phase 13, FR-36). A plain count —
+     * no admin-only check here, same boundary as {@link #listAll}. FR-36
+     * requires this figure to be sourced live from its owning service, not
+     * cached or duplicated, so this reads {@link UserRepository#count()}
+     * directly on every call.
+     */
+    @Transactional(readOnly = true)
+    public long countAll() {
+        return userRepository.count();
+    }
 }

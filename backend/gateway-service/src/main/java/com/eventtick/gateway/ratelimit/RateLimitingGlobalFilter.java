@@ -83,6 +83,11 @@ import reactor.core.publisher.Mono;
  * <p><b>If Redis itself is unreachable or errors</b>, {@link RedisRateLimiter}
  * fails open — the request is treated as allowed — rather than this filter
  * turning a Redis outage into a full API outage; unchanged from Phase 11.
+ *
+ * <p><b>FR-40:</b> {@link #respond} also reports every decision (allowed
+ * and rejected) to {@link RateLimitActivityRecorder}, purely observational
+ * — it never influences the {@code isAllowed}/{@code 429} decision above,
+ * which is unchanged. See that class for the recording/read design.
  */
 @Component
 public class RateLimitingGlobalFilter implements WebFilter, Ordered {
@@ -93,13 +98,16 @@ public class RateLimitingGlobalFilter implements WebFilter, Ordered {
     private final RateLimitKeyResolver keyResolver;
     private final RateLimitPolicyResolver policyResolver;
     private final GatewayErrorWriter errors;
+    private final RateLimitActivityRecorder activityRecorder;
 
     public RateLimitingGlobalFilter(RedisRateLimiter rateLimiter, RateLimitKeyResolver keyResolver,
-            RateLimitPolicyResolver policyResolver, GatewayErrorWriter errors) {
+            RateLimitPolicyResolver policyResolver, GatewayErrorWriter errors,
+            RateLimitActivityRecorder activityRecorder) {
         this.rateLimiter = rateLimiter;
         this.keyResolver = keyResolver;
         this.policyResolver = policyResolver;
         this.errors = errors;
+        this.activityRecorder = activityRecorder;
     }
 
     /**
@@ -149,9 +157,11 @@ public class RateLimitingGlobalFilter implements WebFilter, Ordered {
         response.getHeaders().forEach((name, value) -> httpResponse.getHeaders().add(name, value));
 
         if (response.isAllowed()) {
+            activityRecorder.recordAllowed(policy.id());
             return chain.filter(exchange);
         }
 
+        activityRecorder.recordRejected(policy.id());
         log.info("rate limit exceeded id={} path={} policy={}",
                 RequestIdWebFilter.requestId(exchange), exchange.getRequest().getPath().value(), policy.id());
         return errors.write(exchange, HttpStatus.TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS",

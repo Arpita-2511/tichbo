@@ -79,6 +79,19 @@ public class ContentService {
         contentRepository.delete(getById(id));
     }
 
+    /**
+     * {@code GET /api/admin/content/stats} (Phase 13, FR-36). A live count
+     * — no admin-only check here; that is enforced once, at the gateway,
+     * the same boundary every other admin-only path relies on. FR-36
+     * requires this figure to be sourced live from its owning service, not
+     * cached or duplicated, so this reads {@link ContentRepository#count()}
+     * directly on every call.
+     */
+    @Transactional(readOnly = true)
+    public long countAll() {
+        return contentRepository.count();
+    }
+
     private void validate(Content content) {
         if (content.getType() == null) {
             throw new IllegalArgumentException("Content type is required.");

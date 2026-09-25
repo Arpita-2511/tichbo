@@ -16,7 +16,7 @@
 
 import type {
   Content, Venue, Show, Booking, User, Plan,
-  AdminStats, SearchResult, EventFilters, ContentType,
+  AdminStats, AdminOverviewStats, RateLimitStatsResponse, SearchResult, EventFilters, ContentType,
   SeatSection, SubscriptionPlan
 } from '../types';
 
@@ -274,6 +274,7 @@ function toUser(b: BackendUser): User {
     name: b.name,
     email: b.email,
     plan: toSubscriptionPlan(b.planName),
+    role: b.role,
     createdAt: b.createdAt,
   };
 }
@@ -348,6 +349,41 @@ export async function getAdminStats(): Promise<AdminStats> {
 export async function getRateLimitPolicies() {
   await delay(300);
   return rateLimitPolicies;
+}
+
+// FR-40 (Phase 13): the real Gateway Rate-Limit Visibility endpoint — a
+// LOCAL Gateway endpoint (not proxied to a downstream service), still
+// reached the same way as every other admin call: through the Gateway
+// (BASE_URL), with the caller's JWT (auth: true). Kept separate from the
+// mock getRateLimitPolicies() above, the same pattern
+// getAdminOverviewStats() already established alongside the mock
+// getAdminStats().
+export async function getRateLimitStats(): Promise<RateLimitStatsResponse> {
+  return request<RateLimitStatsResponse>('/api/admin/rate-limits/stats', { auth: true });
+}
+
+// FR-36 (Phase 13): real Admin Overview statistics — three independent
+// backend calls, each to the service that owns that figure, combined
+// client-side. No aggregation endpoint/admin-service: this is exactly
+// what the backend's own FR-36 requirement ("each figure sourced from the
+// service that owns it, never duplicated") pushes the composition to.
+interface UserStatsResponse { totalUsers: number }
+interface CatalogStatsResponse { totalContent: number; totalShows: number; totalVenues: number }
+interface BookingStatsResponse { totalBookings: number }
+
+export async function getAdminOverviewStats(): Promise<AdminOverviewStats> {
+  const [userStats, catalogStats, bookingStats] = await Promise.all([
+    request<UserStatsResponse>('/api/admin/users/stats', { auth: true }),
+    request<CatalogStatsResponse>('/api/admin/content/stats', { auth: true }),
+    request<BookingStatsResponse>('/api/admin/bookings/stats', { auth: true }),
+  ]);
+  return {
+    totalUsers: userStats.totalUsers,
+    totalContent: catalogStats.totalContent,
+    totalShows: catalogStats.totalShows,
+    totalVenues: catalogStats.totalVenues,
+    totalBookings: bookingStats.totalBookings,
+  };
 }
 
 // ─── Search ──────────────────────────────────────────────────────────────────

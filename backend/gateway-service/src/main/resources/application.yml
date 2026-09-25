@@ -121,11 +121,24 @@ spring:
           predicates:
             - Path=/api/admin/content
 
+        # Phase 13 FR-36: the catalog-service portion of Admin Overview and
+        # Statistics. Declared BEFORE admin-content-by-id below: that
+        # route's {id} template variable matches any single path segment,
+        # including the literal "stats", and Spring Cloud Gateway matches
+        # routes in list order (first match wins) — without this ordering,
+        # admin-content-by-id would swallow this path.
+        - id: admin-content-stats
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/content/stats
+
         # FR-38: PUT/DELETE /api/admin/content/{id} — a separate route
         # because Path=/api/admin/content (above) matches only that exact
         # path, not a sub-path with an id segment. Path predicates don't
         # distinguish HTTP method, so this one route already covers both
         # PUT and DELETE for the same shape — not /api/admin/content/**.
+        # {id} would also literally match "stats" as a path segment, which
+        # is exactly why admin-content-stats above must come first.
         - id: admin-content-by-id
           uri: http://localhost:8082
           predicates:
@@ -191,6 +204,17 @@ spring:
           predicates:
             - Path=/api/admin/bookings
 
+        # Phase 13 FR-36: the booking-service portion of Admin Overview and
+        # Statistics. Distinct from admin-bookings above (exact collection
+        # path only, no extra segment) — no admin-bookings-by-id route
+        # exists yet, so unlike admin-content-stats there is no {id}
+        # wildcard route this could collide with; declaration order doesn't
+        # matter here.
+        - id: admin-bookings-stats
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/admin/bookings/stats
+
         # Phase 13.7.2: the fourth admin route, same discipline. {showId} is
         # a URI template variable (one path segment), so this only ever
         # matches .../shows/<id>/seat-activity — never a bare
@@ -211,6 +235,16 @@ spring:
           uri: http://localhost:8081
           predicates:
             - Path=/api/admin/users
+
+        # Phase 13 FR-36: the first Admin Overview/Statistics route. A
+        # distinct literal path, not a sub-path of admin-users (which
+        # matches only the exact collection path, no extra segment) and
+        # not /api/admin/users/** — so it can never swallow admin-users,
+        # admin-users-plan, or admin-users-role below.
+        - id: admin-users-stats
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/admin/users/stats
 
         # Phase 13 FR-37: the remaining two admin User Management
         # operations. {userId} is a URI template variable (one path

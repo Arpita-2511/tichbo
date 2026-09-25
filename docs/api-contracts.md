@@ -225,6 +225,28 @@ No new response DTO for either endpoint — both reuse the existing `UserRespons
 
 ---
 
+## `GET /api/admin/users/stats`
+
+Phase 13, FR-36 — the first Admin Overview/Statistics operation. A live count, sourced directly from `user-service` (the owner of `users`) on every call — never cached or duplicated, per FR-36's own requirement that each figure come from the service that owns the underlying data.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as every other admin-only path above.
+
+**Request:** no parameters, no body.
+
+**Success response — `200 OK`:**
+
+```json
+{ "totalUsers": 42 }
+```
+
+**Error responses:** `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above). No `400`/`404` — this endpoint takes no input that could be malformed or missing.
+
+No new repository query — `totalUsers` is `UserRepository.count()` (inherited from `JpaRepository`), via a new `UserService.countAll()` and a new `UserStatsResponse` record. This is only the user-count slice of FR-36; content/show/venue counts (catalog-service), booking counts (booking-service), and rate-limit/traffic activity (FR-40, gateway-service) are separate, not-yet-implemented slices.
+
+---
+
 ## `POST /api/admin/content`
 
 Phase 13.5.2 — the first catalog admin operation. **Owned and implemented by `catalog-service` (port `8082`)** — every other endpoint on this page is `user-service`'s; this is the first `catalog-service` entry, added here as a deliberate, narrow exception (see this file's opening note — the rest of `catalog-service`'s existing, already-implemented REST API is still undocumented and out of scope for this pass).
@@ -440,7 +462,7 @@ Cancels a Show — sets **only** its `status` to `CANCELLED`, leaving `content`,
 
 No new request/response DTO and no new exception type — this endpoint reuses `ShowResponse` and the existing not-found handling exactly as already implemented for `GET`/`PUT /api/catalog/shows/{id}`.
 
-**Caveat for a browser-based admin client:** the Gateway's CORS configuration (`spring.cloud.gateway.globalcors`) currently allows only `GET`, `POST`, `OPTIONS` — **not** `PATCH`. This endpoint works correctly from a non-browser client (`curl`, a server-to-server call, etc.) today; a browser calling it directly would fail CORS preflight until `PATCH` is added to the allowed methods, which this phase did not change (out of scope — no CORS/security configuration was modified).
+The Gateway's CORS configuration (`spring.cloud.gateway.globalcors`) allows `GET`, `POST`, `PATCH`, `OPTIONS` — this endpoint works correctly from a browser-based admin client, not just direct/server-to-server calls.
 
 ---
 
@@ -532,6 +554,34 @@ No new request/response DTO or exception type — this endpoint reuses `VenueSer
 
 ---
 
+## `GET /api/admin/content/stats`
+
+Phase 13, FR-36 — **the catalog-service portion of FR-36 (Admin Overview and Statistics)**, alongside `GET /api/admin/users/stats` (user-service, documented above). One combined endpoint for Content, Show, and Venue counts, all three owned by `catalog-service` — a live read on every call, never cached or duplicated, per FR-36's own requirement that each figure be sourced from the service that owns the underlying data.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as every other admin-only path above.
+
+**Request:** no parameters, no body.
+
+**Success response — `200 OK`:**
+
+```json
+{
+  "totalContent": 5,
+  "totalShows": 12,
+  "totalVenues": 3
+}
+```
+
+**Error responses:** `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above). No `400`/`404` — this endpoint takes no input that could be malformed or missing.
+
+No new repository query — each figure is `{Content,Show,Venue}Repository.count()` (inherited from `JpaRepository`), via three new one-line `countAll()` methods (on `ContentService`, `ShowService`, `VenueService`) combined by a new `CatalogStatsResponse` record and a separate `AdminCatalogStatsController`. Content/show/venue is the full catalog-service slice of FR-36's "at minimum" list; booking counts (booking-service) and rate-limit/traffic activity (FR-40, gateway-service) remain separate, not-yet-implemented slices.
+
+**Gateway routing note:** served by a separate explicit route, `admin-content-stats` (`Path=/api/admin/content/stats`), declared **before** `admin-content-by-id` (`Path=/api/admin/content/{id}`) in `application.yml` — that route's `{id}` template variable would otherwise also literally match the segment `stats`, and Spring Cloud Gateway matches routes in list order (first match wins).
+
+---
+
 ## `GET /api/admin/bookings`
 
 Phase 13.7.1 — the first admin Booking operation. **Owned and implemented by `booking-service`** (port `8083`), the first `booking-service` entry on this page (see the note on `POST /api/admin/content` above — this file otherwise still only covers `user-service`, and `booking-service`'s existing, already-implemented customer-facing REST API — seat map, hold/release, create/confirm/cancel booking, per-user booking list — remains undocumented here, unchanged, and out of scope for this pass).
@@ -608,6 +658,78 @@ This shape does not include which booking (if any) currently holds a seat, or se
 **Error responses:** `400 VALIDATION_ERROR` (`showId` isn't a well-formed UUID, the existing `MethodArgumentTypeMismatchException` handling); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway** — see above).
 
 No new request/response DTO — this endpoint reuses the existing `SeatMapResponse`/`SeatMapItemDto`/`ShowSeatQueryService.getSeatMap` exactly as already implemented for `GET /api/bookings/shows/{showId}/seats`, via a separate `AdminShowSeatActivityController`.
+
+---
+
+## `GET /api/admin/bookings/stats`
+
+Phase 13, FR-36 — **the booking-service portion of FR-36 (Admin Overview and Statistics)**, alongside `GET /api/admin/users/stats` (user-service) and `GET /api/admin/content/stats` (catalog-service). A live count of all bookings, owned by `booking-service` — read fresh on every call, never cached or duplicated, per FR-36's own requirement that each figure be sourced from the service that owns the underlying data.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as `GET /api/admin/bookings` above.
+
+**Request:** no parameters, no body.
+
+**Success response — `200 OK`:**
+
+```json
+{ "totalBookings": 17 }
+```
+
+**Error responses:** `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above). No `400`/`404` — this endpoint takes no input that could be malformed or missing.
+
+No new repository query — `totalBookings` is `BookingRepository.count()` (inherited from `JpaRepository`), via a new one-line `BookingService.countAll()` and a new `BookingStatsResponse` record, exposed from the existing `AdminBookingController`. This completes FR-36's "counts of users, content/shows, and bookings" — see `GET /api/admin/rate-limits/stats` below for FR-40, the current traffic/rate-limit activity piece.
+
+---
+
+## `GET /api/admin/rate-limits/stats`
+
+Phase 13, FR-40 (Admin Rate-Limit Visibility) — **owned and served directly by `gateway-service`** (port `8080`), the first endpoint gateway-service serves locally rather than proxying to a downstream service. There is deliberately **no `application.yml` route** for this path: `AdminRateLimitController` answers the request itself; nothing is forwarded anywhere.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced by the **same existing** `/api/admin/** -> hasAuthority("ROLE_ADMIN")` rule in `GatewaySecurityConfig` (Phase 13.3) — that rule already applies to any request the reactive `SecurityWebFilterChain` sees, whether it is ultimately served by a proxied route or, as here, a local `@RestController`. No new security configuration was added.
+
+**Request:** no parameters, no body.
+
+**Success response — `200 OK`:**
+
+```json
+{
+  "policies": {
+    "AUTH":    { "PUBLIC":  { "replenishRate": 2,  "burstCapacity": 5,   "requestedTokens": 1 } },
+    "CATALOG": { "FREE": { "replenishRate": 8, "burstCapacity": 16, "requestedTokens": 1 }, "PRO": {...}, "PREMIUM": {...}, "ADMIN": {...} },
+    "BOOKING": { "FREE": {...}, "PRO": {...}, "PREMIUM": {...}, "ADMIN": {...} },
+    "USER":    { "FREE": {...}, "PRO": {...}, "PREMIUM": {...}, "ADMIN": {...} }
+  },
+  "fallback": { "replenishRate": 2, "burstCapacity": 5, "requestedTokens": 1 },
+  "activity": {
+    "redisAvailable": true,
+    "byPolicy": {
+      "AUTH:PUBLIC":  { "allowed": 120, "rejected": 3 },
+      "CATALOG:FREE": { "allowed": 540, "rejected": 0 },
+      "FALLBACK":     { "allowed": 12,  "rejected": 1 }
+    }
+  }
+}
+```
+
+**`policies`/`fallback` — the active policy matrix.** Read live from the existing `RateLimitPolicyProperties` bean (already bound from `eventtick.rate-limit.*` in `application.yml` at startup, Phase 12) — nothing in this response is hardcoded; every key/tier/number reflects whatever is currently configured. **Read-only**: this endpoint cannot edit policies at runtime, consistent with FR-40 ("shall **not** allow editing... Policies remain configuration-driven... a restart to change"); FR-31 remains explicitly out of scope.
+
+**`activity` — current rate-limit activity.** Counted since this gateway instance's counters were initialized — **not** a sliding time window, **not** historical analytics, **not** a permanent audit record. Counters reset on every gateway restart; there is no TTL/time-bucketing. `byPolicy` is keyed by the same `CATEGORY:TIER` id the rate limiter itself resolves per request (plus `FALLBACK` for unrecognized paths/gaps in the matrix) — every configured policy id appears, even ones that haven't seen any traffic yet (at `0`/`0`).
+
+*Source*: `RateLimitingGlobalFilter.respond()` — the single global filter that already sees every rate-limit decision — calls `RateLimitActivityRecorder.recordAllowed`/`recordRejected` for every request, purely as an observational side effect; it never influences the actual `isAllowed`/`429` decision, which is unchanged.
+
+*Redis namespace*: a **completely separate** key prefix, `gateway:admin:rate-limit-activity:{policyId}:{allowed|rejected}`, incremented via plain Redis `INCR` through the existing `ReactiveStringRedisTemplate` bean (already auto-configured by the existing `spring-boot-starter-data-redis-reactive` dependency — no new dependency was added). This is deliberately **not** a read of `RedisRateLimiter`'s own internal token-bucket keys (`request_rate_limiter.{id}.tokens`/`.timestamp`) — those are an undocumented Spring Cloud Gateway implementation detail, and coupling to them would be unsafe; the two namespaces never overlap.
+
+**If Redis is unreachable:** the endpoint still returns **`200 OK`**, never a `5xx`. `policies`/`fallback` are returned correctly regardless (they come from in-memory config, not Redis). `activity.redisAvailable` is `false` and `activity.byPolicy` is an empty object. Recording (the write side, in `RateLimitingGlobalFilter`) is fire-and-forget and non-blocking — a Redis failure there is logged and swallowed, and can never cause the *original* request (the one being rate-limited) to fail; this is the same fail-open philosophy `RedisRateLimiter` itself already uses, extended to the new counters.
+
+**Error responses:** `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above). No `400`/`404` — this endpoint takes no input that could be malformed or missing, and never 5xxs on a Redis outage (see above).
+
+**What the Gateway does *not* store:** the new counters hold only a policy id (`CATEGORY:TIER`, a gateway-internal classification label) and two integers — never a `userId`, `bookingId`, or any other business/domain identifier. This keeps the Gateway an operational component, not a business-data store, consistent with `docs/architecture.md` §33 ("the Gateway does not contain business logic"), now extended to "the Gateway does not accumulate business data" for FR-40.
+
+No new request/response DTO beyond `RateLimitStatsResponse`/`RateLimitPolicyDto`/`RateLimitActivityDto`/`RateLimitActivitySection` (all new, gateway-service-only) — the existing `RateLimitPolicyProperties`/`RateLimitingGlobalFilter` are otherwise unchanged.
 
 ---
 

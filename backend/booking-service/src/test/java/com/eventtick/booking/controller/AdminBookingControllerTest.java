@@ -32,13 +32,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Phase 13.7.1: {@code GET /api/admin/bookings}. A {@code @WebMvcTest} slice
- * — real {@code GlobalExceptionHandler}, mocked {@link BookingService}; see
+ * Phase 13.7.1 ({@code GET /api/admin/bookings}) / FR-36
+ * ({@code GET /api/admin/bookings/stats}). A {@code @WebMvcTest} slice —
+ * real {@code GlobalExceptionHandler}, mocked {@link BookingService}; see
  * {@link BookingControllerRegressionTest} for why booking-service's H2 test
  * database can't be used for a real repository round-trip here. Nothing
- * about this endpoint's own logic needs one: it delegates entirely to
- * {@code BookingService.listAll} (Phase 13.7.1) and the existing
- * {@code BookingService.getBookingSeats}.
+ * about either endpoint's own logic needs one: {@code listBookings}
+ * delegates to {@code BookingService.listAll} (Phase 13.7.1) and the
+ * existing {@code BookingService.getBookingSeats}; {@code stats} delegates
+ * to the new, one-line {@code BookingService.countAll}.
  *
  * <p>Deliberately does not test {@code /api/admin/** -> ROLE_ADMIN}
  * authorization — that is enforced at the gateway, not here (see the
@@ -159,5 +161,49 @@ class AdminBookingControllerTest {
         }
         assertThat(fieldNames).containsExactlyInAnyOrder(
                 "bookingId", "userId", "showId", "status", "totalAmount", "seats", "createdAt", "updatedAt");
+    }
+
+    // ==================== GET /api/admin/bookings/stats ====================
+
+    @Test
+    void stats_validRequest_returns200() throws Exception {
+        when(bookingService.countAll()).thenReturn(17L);
+
+        mockMvc.perform(get("/api/admin/bookings/stats"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void stats_totalBookings_reflectsBookingServiceCount() throws Exception {
+        when(bookingService.countAll()).thenReturn(17L);
+
+        mockMvc.perform(get("/api/admin/bookings/stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalBookings").value(17));
+    }
+
+    @Test
+    void stats_emptyDatabase_returnsZero() throws Exception {
+        when(bookingService.countAll()).thenReturn(0L);
+
+        mockMvc.perform(get("/api/admin/bookings/stats"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalBookings").value(0));
+    }
+
+    @Test
+    void stats_response_containsExactlyTheOneExpectedField() throws Exception {
+        when(bookingService.countAll()).thenReturn(3L);
+
+        String body = mockMvc.perform(get("/api/admin/bookings/stats"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode json = objectMapper.readTree(body);
+        Set<String> fieldNames = new java.util.LinkedHashSet<>();
+        for (Iterator<String> it = json.fieldNames(); it.hasNext(); ) {
+            fieldNames.add(it.next());
+        }
+        assertThat(fieldNames).containsExactly("totalBookings");
     }
 }

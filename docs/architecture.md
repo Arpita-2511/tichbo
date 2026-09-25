@@ -2120,26 +2120,35 @@ The architecture has now been generalized from a movie-specific application to a
 
 ---
 
-# 45. Admin Dashboard Architecture (Phase 13 — In Progress)
+# 45. Admin Dashboard Architecture (Phase 13 — Complete)
 
-**Implementation is in progress.** This section documents the architecture
-for the Admin Dashboard's backend API surface; the table below tracks
-which requirements are actually implemented against it. See
+**All six Phase 13 Admin Dashboard requirements are implemented.** This
+section documents the architecture for the Admin Dashboard's backend API
+surface; the table below tracks each requirement's status. See
 `docs/requirements.md` §15 (FR-35–FR-40) for the corresponding numbered
 requirements and their status.
 
 | Requirement | Status |
 |---|---|
 | FR-35 Admin Dashboard Access Control | **Complete** |
-| FR-36 Admin Overview and Statistics | Not implemented |
-| FR-37 Admin User Management | Partial — list implemented; plan/role change not implemented |
-| FR-38 Admin Event/Show Management | Partial — Content create and Show cancel implemented; remaining Content/Show operations and all Venue admin management not implemented |
-| FR-39 Admin Booking Management | **Complete** |
-| FR-40 Admin Rate-Limit Visibility | Not implemented |
+| FR-36 Admin Overview and Statistics | **Complete** (backend + frontend) |
+| FR-37 Admin User Management | **Complete** (backend) |
+| FR-38 Admin Event/Show Management | **Complete** (backend) |
+| FR-39 Admin Booking Management | **Complete** (backend) |
+| FR-40 Admin Rate-Limit Visibility | **Complete** (backend + frontend) |
 
-No frontend code exists for the Admin Dashboard for any requirement,
-complete or not — every implemented item so far is a backend API endpoint
-only, reached through the Gateway exactly like any other endpoint.
+**Frontend coverage is partial by design, not by omission.** The `/admin`
+page has two real, backend-connected sections: "Platform Overview" (FR-36
+— five stat cards, fetched from the three owning services'
+`.../stats` endpoints through the Gateway) and "Traffic & Rate Limiting"
+(FR-40 — Redis status, allowed/rejected activity by policy, and the
+configured policy matrix, fetched from the Gateway's own
+`.../rate-limits/stats` endpoint). FR-37/FR-38/FR-39's admin write and
+monitoring operations (user plan/role management, Content/Show/Venue
+management, booking/seat-activity monitoring) have no frontend UI yet —
+those endpoints are implemented and tested backend API surface only,
+reached through the Gateway exactly like any other endpoint, with no
+corresponding admin UI built for them in Phase 13.
 
 ## 45.1 Purpose and Access
 
@@ -2214,7 +2223,11 @@ Concretely, an admin API call is `Admin Frontend -> API Gateway -> the
 owning service`, exactly the same path a customer-facing request already
 takes (§26, §32) — the Gateway does not gain a new role as a data owner,
 and the Admin Dashboard's frontend never talks to a backend service
-directly (consistent with FR-19, Centralized Entry Point).
+directly (consistent with FR-19, Centralized Entry Point). **One
+deliberate exception**: FR-40's `GET /api/admin/rate-limits/stats` is
+served directly *by* the Gateway itself, since the Gateway is the actual
+owner of the rate-limit policy matrix and activity counters — there is no
+"owning service" further downstream to forward to. See §45.5.
 
 No `admin-service` is introduced. Admin-only *authorization* is enforced
 once, at the Gateway (§45.1); each service still performs its own
@@ -2235,6 +2248,62 @@ reconsidered only in a later phase if at all:
 * Payment, Kafka/event-driven communication, data science/ML, monitoring
   (§29–§31, §25, §27–§28 remain as previously documented, unaffected by
   this section), and Docker/deployment changes.
+
+## 45.5 FR-40: Gateway Rate-Limit Visibility (Implementation Notes)
+
+`GET /api/admin/rate-limits/stats` is gateway-service's first **locally
+served** admin endpoint — a real `@RestController` (`AdminRateLimitController`),
+not a proxied route, and deliberately has no `application.yml` route entry.
+The existing `/api/admin/** -> hasAuthority("ROLE_ADMIN")` rule in
+`GatewaySecurityConfig` already protects it unchanged: that rule is
+enforced by the reactive `SecurityWebFilterChain`, which runs regardless of
+whether a request is ultimately served by a proxied route or a local
+controller — no new security configuration was needed. Full endpoint
+contract: `docs/api-contracts.md`.
+
+Two independent data sources, matching FR-40's own two asks:
+
+* **The active policy matrix** (`policies`/`fallback` in the response) —
+  read live from the existing `RateLimitPolicyProperties` bean (bound from
+  `eventtick.rate-limit.*` at startup, Phase 12). No new state; nothing
+  hardcoded.
+* **Current activity** (`activity` in the response) — new, deliberately
+  minimal Redis counters (`RateLimitActivityRecorder`), incremented from
+  the single existing `RateLimitingGlobalFilter.respond()` method (the one
+  place that already sees every rate-limit decision) as a purely
+  observational side effect — the token-bucket `isAllowed`/`429` decision
+  itself, its headers, and its JSON error body are all unchanged.
+
+**A completely separate Redis namespace** (`gateway:admin:rate-limit-activity:{policyId}:{allowed|rejected}`,
+plain `INCR`) from `RedisRateLimiter`'s own internal token-bucket keys
+(`request_rate_limiter.{id}.tokens`/`.timestamp`, an undocumented Spring
+Cloud Gateway implementation detail) — the two are never read across, by
+design, so the admin feature can never become unsafely coupled to
+rate-limiting internals that could change between Spring Cloud Gateway
+versions.
+
+**Since-startup counters, not historical analytics.** They represent
+"activity since this gateway instance's counters were initialized" — no
+sliding time window, no TTL/time-bucketing, no permanent record; a restart
+resets them to zero. This is a deliberately minimal reading of FR-40's
+"current traffic/rate-limit activity," consistent with this section's own
+non-goals above.
+
+**Redis unavailable → the endpoint still returns `200`, never `5xx`.**
+Recording (writes) is fire-and-forget and non-blocking — a Redis failure
+there is logged and swallowed, and can never fail the *original* request
+being rate-limited, the same fail-open principle already established for
+`RedisRateLimiter` itself (§19–§22). Reading (the stats endpoint itself)
+degrades gracefully: `policies`/`fallback` are unaffected (they need no
+Redis), and `activity.redisAvailable = false` with an empty `byPolicy`
+replaces the counters rather than the request failing.
+
+**No business data.** The new counters hold only a policy id
+(`CATEGORY:TIER`, a Gateway-internal classification label) and two
+integers — never a `userId`, `bookingId`, or other domain identifier. The
+Gateway remains an operational component, not a data owner for any
+business entity (§33), extended here to "the Gateway does not accumulate
+business data" for FR-40 specifically.
 
 ## Current Status
 

@@ -1024,6 +1024,7 @@ export const mockUser: User = {
   phone: '+91 98765 43210',
   city: 'Mumbai',
   plan: 'PREMIUM',
+  role: 'CUSTOMER',
   createdAt: '2025-03-12T08:00:00',
   savedEvents: ['c4', 's8', 'e2'],
 };

@@ -35,6 +35,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * same reason: a lazy-loading bug around {@code Plan} only shows up
  * outside an open Hibernate session.
  *
+ * <p>Also covers FR-36's {@code GET /api/admin/users/stats} — placed here
+ * rather than a new class since it's the same controller
+ * ({@code AdminUserController}) and the same test style.
+ *
  * <p>Like {@link AdminUserListIntegrationTest}, this class deliberately
  * uses ordinary self-registered accounts' own tokens throughout — the
  * endpoint doesn't check the caller's role itself (that's the Gateway's
@@ -307,5 +311,75 @@ class AdminUserManagementIntegrationTest {
         mockMvc.perform(get("/api/admin/users").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content.length()").value(1));
+    }
+
+    // ==================== Stats (FR-36) ====================
+
+    @Test
+    void stats_validRequest_returns200() throws Exception {
+        registerUser("statscaller1@example.com");
+        String token = loginAndGetToken("statscaller1@example.com");
+
+        mockMvc.perform(get("/api/admin/users/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void stats_responseContainsTotalUsers() throws Exception {
+        registerUser("statscaller2@example.com");
+        String token = loginAndGetToken("statscaller2@example.com");
+
+        mockMvc.perform(get("/api/admin/users/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalUsers").exists());
+    }
+
+    @Test
+    void stats_reflectsThePersistedUserCount() throws Exception {
+        registerUser("statscaller3@example.com");
+        registerUser("statsother1@example.com");
+        registerUser("statsother2@example.com");
+        String token = loginAndGetToken("statscaller3@example.com");
+
+        // 3 registrations above -> 3 persisted users.
+        mockMvc.perform(get("/api/admin/users/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalUsers").value(3));
+    }
+
+    @Test
+    void stats_emptyDatabase_returnsZero() throws Exception {
+        // A valid JWT doesn't require the user it names to still exist
+        // (JwtAuthenticationFilter never re-checks the database) — register
+        // and log in to get a real token, then delete that user, leaving
+        // the table genuinely empty for the call itself.
+        registerUser("statscaller4@example.com");
+        String token = loginAndGetToken("statscaller4@example.com");
+        userRepository.deleteAll();
+
+        mockMvc.perform(get("/api/admin/users/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalUsers").value(0));
+    }
+
+    @Test
+    void stats_doesNotExposePasswordHashOrUnrelatedUserData() throws Exception {
+        registerUser("statscaller5@example.com");
+        String token = loginAndGetToken("statscaller5@example.com");
+
+        String body = mockMvc.perform(get("/api/admin/users/stats").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        org.assertj.core.api.Assertions.assertThat(body)
+                .doesNotContainIgnoringCase("password")
+                .doesNotContain("email")
+                .doesNotContain("\"id\"")
+                .doesNotContain("\"role\"")
+                .doesNotContain("\"planId\"");
+        // Exactly the one field the response shape is meant to expose.
+        com.fasterxml.jackson.databind.JsonNode json = objectMapper.readTree(body);
+        org.assertj.core.api.Assertions.assertThat(json.size()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(json.fieldNames().next()).isEqualTo("totalUsers");
     }
 }

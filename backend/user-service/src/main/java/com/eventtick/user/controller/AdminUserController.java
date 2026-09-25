@@ -3,10 +3,12 @@ package com.eventtick.user.controller;
 import com.eventtick.user.dto.ChangePlanRequest;
 import com.eventtick.user.dto.ChangeRoleRequest;
 import com.eventtick.user.dto.UserResponse;
+import com.eventtick.user.dto.UserStatsResponse;
 import com.eventtick.user.entity.User;
 import com.eventtick.user.service.UserService;
 import jakarta.validation.Valid;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,7 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * Phase 13, FR-37: the remaining admin User Management write operations. A
+ * Phase 13, FR-37 ({@link #changePlan}, {@link #changeRole}) / FR-36
+ * ({@link #stats}): the remaining admin User Management operations. A
  * separate controller from {@link UserController} — not new methods added
  * there — following the same convention every other admin operation in
  * this project uses (a dedicated, minimal admin controller reusing
@@ -36,6 +39,11 @@ import java.util.UUID;
  * read from the request body or the {@code userId} path variable, so a
  * forged body cannot bypass the self-role check in
  * {@code UserService.changeRole}.
+ *
+ * <p><b>{@link #stats} (FR-36):</b> a live count, not a cached/duplicated
+ * figure — the Admin Dashboard's overview statistics are required to be
+ * sourced from the service that owns each figure (see the FR-36 inspection
+ * report), and user counts are owned by this service.
  */
 @RestController
 @RequestMapping("/api/admin/users")
@@ -59,5 +67,10 @@ public class AdminUserController {
         UUID requestingAdminId = UUID.fromString(authentication.getName());
         User user = userService.changeRole(userId, request.role(), requestingAdminId);
         return UserResponse.from(user);
+    }
+
+    @GetMapping("/stats")
+    public UserStatsResponse stats() {
+        return new UserStatsResponse(userService.countAll());
     }
 }

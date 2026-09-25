@@ -132,6 +132,10 @@ export interface User {
   city?: string;
   avatar?: string;
   plan: SubscriptionPlan;
+  // Mirrors the backend's UserRole (chk_users_role: CUSTOMER, ADMIN). Used
+  // only for frontend UI gating (e.g. the Admin dashboard) — the Gateway's
+  // own JWT role check remains the authoritative enforcement.
+  role: 'CUSTOMER' | 'ADMIN';
   createdAt: string;
   savedEvents?: string[];
 }
@@ -167,6 +171,56 @@ export interface AdminStats {
   bookingsTrend: { date: string; count: number }[];
   revenueTrend: { date: string; amount: number }[];
   bookingsByCategory: { category: string; count: number }[];
+}
+
+/**
+ * FR-36 (Phase 13): the real Admin Overview statistics, combined
+ * client-side from three independent backend calls — GET
+ * /api/admin/users/stats (user-service), GET /api/admin/content/stats
+ * (catalog-service), and GET /api/admin/bookings/stats (booking-service) —
+ * all through the Gateway. Deliberately separate from the mock
+ * {@link AdminStats} above (revenue/trends/etc. are not real yet).
+ */
+export interface AdminOverviewStats {
+  totalUsers: number;
+  totalContent: number;
+  totalShows: number;
+  totalVenues: number;
+  totalBookings: number;
+}
+
+/**
+ * FR-40 (Phase 13): the real Gateway Rate-Limit Visibility response from
+ * {@code GET /api/admin/rate-limits/stats} — a LOCAL Gateway endpoint, not
+ * a proxied downstream-service route. Deliberately separate from the mock
+ * {@link RateLimitPolicy} above (plan/route/limit/window is a different,
+ * unrelated shape used by the pre-existing mock rate-limit section).
+ *
+ * <p>{@code policies}/{@code fallback}: the *configured* limits, keyed
+ * {@code category -> tier -> limits}. {@code activity}: *observed* counters
+ * since the Gateway's counters were initialized (not a time window, not
+ * historical analytics — see {@link RateLimitActivitySection}).
+ */
+export interface RateLimitPolicyLimits {
+  replenishRate: number;
+  burstCapacity: number;
+  requestedTokens: number;
+}
+
+export interface RateLimitPolicyActivity {
+  allowed: number;
+  rejected: number;
+}
+
+export interface RateLimitActivitySection {
+  redisAvailable: boolean;
+  byPolicy: Record<string, RateLimitPolicyActivity>;
+}
+
+export interface RateLimitStatsResponse {
+  policies: Record<string, Record<string, RateLimitPolicyLimits>>;
+  fallback: RateLimitPolicyLimits;
+  activity: RateLimitActivitySection;
 }
 
 // ─── Search ──────────────────────────────────────────────────────────────────

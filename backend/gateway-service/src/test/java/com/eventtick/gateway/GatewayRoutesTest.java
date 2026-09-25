@@ -49,12 +49,13 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyFifteenRoutesAreRegistered() {
+    void exactlyEighteenRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
-                        "admin-content", "admin-content-by-id", "admin-show-cancel", "admin-shows",
-                        "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
-                        "admin-show-seat-activity", "admin-users", "admin-users-plan", "admin-users-role");
+                        "admin-content", "admin-content-stats", "admin-content-by-id", "admin-show-cancel",
+                        "admin-shows", "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
+                        "admin-bookings-stats", "admin-show-seat-activity", "admin-users", "admin-users-stats",
+                        "admin-users-plan", "admin-users-role");
     }
 
     @Test
@@ -118,6 +119,29 @@ class GatewayRoutesTest {
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
                 .isEqualTo("admin-show-cancel");
+    }
+
+    @Test
+    void adminContentStatsPath_goesToCatalogService() {
+        // FR-36: the catalog-service portion of Admin Overview and
+        // Statistics — one combined endpoint for content/show/venue counts.
+        assertRoutedTo("/api/admin/content/stats", "admin-content-stats", "http://localhost:8082");
+    }
+
+    @Test
+    void adminContentStatsRoute_doesNotCollideWithTheCollectionOrByIdRoutes() {
+        // The critical case: admin-content-by-id's {id} would otherwise
+        // literally match "stats" as a path segment — admin-content-stats
+        // must be declared first in application.yml and win the match.
+        assertThat(matchFor("/api/admin/content/stats")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content/stats").get().getId()).isEqualTo("admin-content-stats");
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+        assertThat(matchFor("/api/admin/content/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-content-by-id");
+        // No deeper sub-path collides either.
+        assertThat(matchFor("/api/admin/content/stats/extra")).isEmpty();
     }
 
     @Test
@@ -287,13 +311,34 @@ class GatewayRoutesTest {
     void adminBookingsRoute_matchesOnlyThatExactPath_notAnUnrelatedAdminPath() {
         // Not /api/admin/bookings/** — a future per-booking admin path (if
         // ever added) must not silently route here, and this must not
-        // overlap with either existing admin route.
+        // overlap with either existing admin route. /api/admin/bookings/stats
+        // is now a real route of its own (admin-bookings-stats, FR-36)
+        // rather than unrouted.
         assertThat(matchFor("/api/admin/bookings/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        assertThat(matchFor("/api/admin/bookings/stats")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings/stats").get().getId()).isEqualTo("admin-bookings-stats");
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
                 .isEqualTo("admin-show-cancel");
         assertThat(matchFor("/api/admin/content")).isNotEmpty();
         assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+    }
+
+    @Test
+    void adminBookingsStatsPath_goesToBookingService() {
+        // FR-36: the booking-service portion of Admin Overview and
+        // Statistics.
+        assertRoutedTo("/api/admin/bookings/stats", "admin-bookings-stats", "http://localhost:8083");
+    }
+
+    @Test
+    void adminBookingsStatsRoute_doesNotCollideWithTheCollectionRoute() {
+        assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+        assertThat(matchFor("/api/admin/bookings/stats")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings/stats").get().getId()).isEqualTo("admin-bookings-stats");
+        // No deeper sub-path collides either.
+        assertThat(matchFor("/api/admin/bookings/stats/extra")).isEmpty();
     }
 
     @Test
@@ -327,6 +372,24 @@ class GatewayRoutesTest {
         // 13.4) had no route at all — closed with the same
         // explicit-per-endpoint discipline as the other admin routes.
         assertRoutedTo("/api/admin/users", "admin-users", "http://localhost:8081");
+    }
+
+    @Test
+    void adminUsersStatsPath_goesToUserService() {
+        // FR-36: the first Admin Overview/Statistics route.
+        assertRoutedTo("/api/admin/users/stats", "admin-users-stats", "http://localhost:8081");
+    }
+
+    @Test
+    void adminUsersStatsRoute_doesNotCollideWithTheAdminUsersCollectionRoute() {
+        // The extra /stats segment means Path=/api/admin/users (exact,
+        // no extra segment) must not match it, and vice versa.
+        assertThat(matchFor("/api/admin/users")).isNotEmpty();
+        assertThat(matchFor("/api/admin/users").get().getId()).isEqualTo("admin-users");
+        assertThat(matchFor("/api/admin/users/stats")).isNotEmpty();
+        assertThat(matchFor("/api/admin/users/stats").get().getId()).isEqualTo("admin-users-stats");
+        // No deeper sub-path collides either.
+        assertThat(matchFor("/api/admin/users/stats/extra")).isEmpty();
     }
 
     @Test

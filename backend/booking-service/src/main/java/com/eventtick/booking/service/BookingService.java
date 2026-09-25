@@ -249,6 +249,18 @@ public class BookingService {
     }
 
     /**
+     * {@code GET /api/admin/bookings/stats} (Phase 13, FR-36). A live count
+     * — no admin-only check here, same boundary as {@link #listAll}. FR-36
+     * requires this figure to be sourced live from its owning service, not
+     * cached or duplicated, so this reads {@link BookingRepository#count()}
+     * directly on every call.
+     */
+    @Transactional(readOnly = true)
+    public long countAll() {
+        return bookingRepository.count();
+    }
+
+    /**
      * Read-only accessor for a booking's seat line items. Added to let the
      * REST layer assemble {@code BookingResponse.seats} (per the approved
      * API contract) through the service, rather than a controller calling
