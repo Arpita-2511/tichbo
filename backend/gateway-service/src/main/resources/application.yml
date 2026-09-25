@@ -100,6 +100,22 @@ spring:
           predicates:
             - Path=/api/bookings/**
 
+        # Phase 13.5.3: the first admin route. Deliberately an explicit,
+        # narrow predicate for exactly this endpoint — not a generic
+        # /api/admin/** catch-all — so each future admin endpoint is routed
+        # to its actual owning service one at a time (GET /api/admin/users
+        # -> user-service, a future /api/admin/shows -> catalog-service,
+        # etc.), the same "route == real ownership" discipline the three
+        # routes above already follow. This does not change who is allowed
+        # to call it: /api/admin/** -> ROLE_ADMIN (GatewaySecurityConfig,
+        # Phase 13.3) already matches this path and is untouched here —
+        # routing and authorization are configured independently, and a
+        # request is authorized before a route is even chosen.
+        - id: admin-content
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/content
+
 # Phase 7.3: how the gateway validates the JWTs issued by user-service. These
 # must match user-service's jwt.secret / jwt.issuer / jwt.audience — same
 # environment variable names, so setting JWT_SECRET once (e.g. in the shell

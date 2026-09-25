@@ -44,14 +44,14 @@ class GatewayTimeoutConfigTest {
     }
 
     @Test
-    void bothTimeouts_areASingleSharedHttpClientSetting_soAllThreeRoutesInheritThem() {
+    void bothTimeouts_areASingleSharedHttpClientSetting_soEveryRouteInheritsThem() {
         // Spring Cloud Gateway proxies every route through the one HttpClient
-        // built from these properties; none of the three routes below declare a
+        // built from these properties; none of the routes below declare a
         // per-route override, so this configuration alone covers all of them.
         List<Route> routes = routeLocator.getRoutes().collectList().block();
 
         assertThat(routes).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service");
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "admin-content");
         assertThat(routes).allSatisfy(route ->
                 assertThat(route.getMetadata()).as("route %s has no per-route timeout override", route.getId())
                         .doesNotContainKeys("connect-timeout", "response-timeout"));

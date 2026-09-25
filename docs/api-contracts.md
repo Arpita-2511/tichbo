@@ -169,6 +169,51 @@ No search or filtering yet — only pagination/sorting. No single-user admin loo
 
 ---
 
+## `POST /api/admin/content`
+
+Phase 13.5.2 — the first catalog admin operation. **Owned and implemented by `catalog-service` (port `8082`)** — every other endpoint on this page is `user-service`'s; this is the first `catalog-service` entry, added here as a deliberate, narrow exception (see this file's opening note — the rest of `catalog-service`'s existing, already-implemented REST API is still undocumented and out of scope for this pass).
+
+Creates a piece of Content (the generic bookable entity — a movie, sports match, concert, etc.), for the Admin Dashboard's event/show-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-38).
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `catalog-service` has no Spring Security dependency and performs no role check of its own, the same "authorize once, at the edge" boundary `GET /api/admin/users` above uses. Called directly against `catalog-service` (bypassing the Gateway), this endpoint accepts any request the same way the existing, non-admin `POST /api/catalog/content` already does — a known, pre-existing condition (`catalog-service` has *no* independent authorization on *any* of its endpoints today, admin or not) that Phase 13.5.2 does not change.
+
+**Request body:** the existing `ContentRequest` — identical to `POST /api/catalog/content`'s:
+
+```json
+{
+  "type": "MOVIE",
+  "title": "Inception",
+  "description": "A mind-bending heist.",
+  "language": "English",
+  "duration": 148,
+  "genre": "Sci-Fi",
+  "releaseOrEventDate": "2010-07-16"
+}
+```
+
+`type` and `title` are required (`@NotNull`/`@NotBlank`); `duration`, if present, must be positive. Everything else is optional.
+
+**Success response — `201 Created`:** the existing `ContentResponse` shape — same as `POST /api/catalog/content`'s response, and the same `Location` header convention, pointing at the resource's one canonical (non-admin) URI:
+
+```
+Location: /api/catalog/content/{id}
+```
+```json
+{
+  "id": "...", "type": "MOVIE", "title": "Inception", "description": "A mind-bending heist.",
+  "language": "English", "duration": 148, "genre": "Sci-Fi", "releaseOrEventDate": "2010-07-16",
+  "createdAt": "...", "updatedAt": "..."
+}
+```
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation, or a service-layer rule such as a non-positive duration — the existing `GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway**, not this service — see above).
+
+No `AdminContentRequest`/`AdminContentResponse` — this endpoint reuses `ContentRequest`/`ContentResponse`/`ContentService.create` exactly as implemented for the existing `POST /api/catalog/content`; only the path (and, in the running system, the Gateway's authorization rule for it) differs.
+
+---
+
 ## CORS (browser clients)
 
 Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.

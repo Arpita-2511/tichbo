@@ -15,10 +15,13 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 7.1: the three routes exist, each request path lands on the right
- * upstream, and nothing rewrites the path (no filters on any route).
- * Does not start the upstream services or send real traffic — it asks the
- * gateway's own route table which route a given path would match.
+ * Phase 7.1 (plus the Phase 13.5.3 admin route): every route exists, each
+ * request path lands on the right upstream, and nothing rewrites the path
+ * (no filters on any route). Does not start the upstream services or send
+ * real traffic — it asks the gateway's own route table which route a given
+ * path would match. See {@code GatewayAdminAuthorizationTest} for whether a
+ * caller is actually *allowed* through to a route — this class only checks
+ * where a path is routed, never who is authorized.
  */
 @SpringBootTest
 class GatewayRoutesTest {
@@ -45,9 +48,9 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyThreeRoutesAreRegistered() {
+    void exactlyFourRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service");
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "admin-content");
     }
 
     @Test
@@ -67,6 +70,23 @@ class GatewayRoutesTest {
     void bookingPaths_goToBookingService() {
         assertRoutedTo("/api/bookings", "booking-service", "http://localhost:8083");
         assertRoutedTo("/api/bookings/shows/123/seats", "booking-service", "http://localhost:8083");
+    }
+
+    @Test
+    void adminContentPath_goesToCatalogService() {
+        // Phase 13.5.3: an explicit, narrow route for exactly this endpoint
+        // — not part of the catalog-service Path=/api/catalog/** predicate
+        // (a different URL entirely) and not a generic /api/admin/** rule.
+        assertRoutedTo("/api/admin/content", "admin-content", "http://localhost:8082");
+    }
+
+    @Test
+    void adminContentRoute_matchesOnlyItsExactPath_notASubPathOrAnotherAdminEndpoint() {
+        // No "/**" on this predicate: it is deliberately this one path,
+        // not a catch-all — a sub-path or a different future admin
+        // endpoint must not silently start routing through it.
+        assertThat(matchFor("/api/admin/content/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/users")).isEmpty();
     }
 
     @Test
