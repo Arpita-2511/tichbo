@@ -169,6 +169,62 @@ No search or filtering yet — only pagination/sorting. No single-user admin loo
 
 ---
 
+## `PATCH /api/admin/users/{userId}/plan`
+
+Phase 13, FR-37 — the first admin User write operation. Changes a user's subscription plan by reassigning `users.plan_id`. No billing, proration, or business-tier rules — the target plan only needs to already exist.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — this service performs no role check of its own, the same boundary `GET /api/admin/users` above uses.
+
+**Path variable:** `userId` — a UUID.
+
+**Request body:**
+
+```json
+{ "planId": "22222222-2222-2222-2222-222222222222" }
+```
+
+**Success response — `200 OK`:** the existing `UserResponse` shape, with `planId`/`planName` reflecting the new plan:
+
+```json
+{
+  "id": "...", "name": "Ada Lovelace", "email": "ada@example.com", "role": "CUSTOMER",
+  "planId": "22222222-2222-2222-2222-222222222222", "planName": "Pro",
+  "createdAt": "...", "updatedAt": "..."
+}
+```
+
+**Error responses:** `400 VALIDATION_ERROR` (missing/malformed `planId`, or a malformed `userId` path value); `404 USER_NOT_FOUND` (`userId` doesn't exist); `404 PLAN_NOT_FOUND` (`planId` doesn't exist); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+---
+
+## `PATCH /api/admin/users/{userId}/role`
+
+Phase 13, FR-37 — the second admin User write operation. Changes a user's role to `CUSTOMER` or `ADMIN`.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as above. **Additionally, an administrator cannot change their own role** — the acting admin's identity is taken from their own validated JWT (never the request body or the `userId` path value), the same mechanism `GET /api/users/me` already uses; changing any *other* user's role in either direction (`CUSTOMER -> ADMIN`, `ADMIN -> CUSTOMER`) is allowed. There is no "last ADMIN" protection — not specified by FR-37.
+
+**Path variable:** `userId` — a UUID.
+
+**Request body:**
+
+```json
+{ "role": "ADMIN" }
+```
+
+Only the existing `UserRole` values (`CUSTOMER`, `ADMIN`) are accepted; anything else is a validation error.
+
+**Success response — `200 OK`:** the existing `UserResponse` shape, with `role` reflecting the change.
+
+**Error responses:** `400 VALIDATION_ERROR` (`role` missing, or not one of `CUSTOMER`/`ADMIN`, or a malformed `userId` path value); `404 USER_NOT_FOUND` (`userId` doesn't exist); `409 SELF_ROLE_MODIFICATION_NOT_ALLOWED` (`userId` is the acting admin's own id); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+No new response DTO for either endpoint — both reuse the existing `UserResponse` exactly as `GET /api/admin/users`/`GET /api/users/me` already do, via two new `UserService` methods (`changePlan`, `changeRole`) and a separate `AdminUserController`.
+
+---
+
 ## `POST /api/admin/content`
 
 Phase 13.5.2 — the first catalog admin operation. **Owned and implemented by `catalog-service` (port `8082`)** — every other endpoint on this page is `user-service`'s; this is the first `catalog-service` entry, added here as a deliberate, narrow exception (see this file's opening note — the rest of `catalog-service`'s existing, already-implemented REST API is still undocumented and out of scope for this pass).
@@ -214,6 +270,148 @@ No `AdminContentRequest`/`AdminContentResponse` — this endpoint reuses `Conten
 
 ---
 
+## `PUT /api/admin/content/{id}`
+
+FR-38 — the second Content admin operation, alongside `POST /api/admin/content` above (same controller, `AdminContentController`).
+
+Full replace of every mutable Content field — identical behavior to `PUT /api/catalog/content/{id}`, reused unchanged via `ContentService.update`.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as `POST /api/admin/content` above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** the existing `ContentRequest` — identical shape to `POST /api/admin/content`'s.
+
+**Success response — `200 OK`:** the existing `ContentResponse` shape, reflecting the update.
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation, a malformed `id`, or a service-layer rule such as a non-positive duration); `404 ENTITY_NOT_FOUND` (`id` doesn't exist — the existing `CatalogEntityNotFoundException`/`GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+## `DELETE /api/admin/content/{id}`
+
+FR-38 — the third Content admin operation. A genuine hard delete — identical behavior to `DELETE /api/catalog/content/{id}`, reused unchanged via `ContentService.delete`. There is no soft-delete/status alternative: `Content` has no status column.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** none.
+
+**Success response — `204 No Content`.**
+
+**Error responses:** `400 VALIDATION_ERROR` (malformed `id`); `404 ENTITY_NOT_FOUND` (`id` doesn't exist); `409 DATA_INTEGRITY_CONFLICT` (the Content is still referenced by a Show — `fk_shows_content ON DELETE RESTRICT` — not pre-checked, surfaced via the existing `DataIntegrityViolationException` handler); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+No new request/response DTO or exception type for either endpoint — both reuse `ContentRequest`/`ContentResponse`/`ContentService.update`/`ContentService.delete` and the existing exception handling exactly as already implemented for `PUT`/`DELETE /api/catalog/content/{id}`.
+
+**Gateway routing note:** `PUT`/`DELETE /api/admin/content/{id}` are served by a separate explicit route, `admin-content-by-id` (`Path=/api/admin/content/{id}`), alongside the existing `admin-content` route (`Path=/api/admin/content`, no `{id}` segment) — Spring Cloud Gateway `Path` predicates match a fixed number of segments, so the collection-level `POST` and the by-id `PUT`/`DELETE` need two distinct routes even though they're all logically "the same resource."
+
+---
+
+## `POST /api/admin/shows`
+
+FR-38 — the second admin Show operation, alongside `PATCH /api/admin/shows/{id}/cancel` below (same controller, `AdminShowController`).
+
+Creates a Show (a scheduled occurrence of a piece of Content at a Venue). Identical behavior to `POST /api/catalog/shows`, reused unchanged via `ShowService.create` — a new show always starts `SCHEDULED`, not a caller-supplied value.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `catalog-service` has no Spring Security dependency and performs no role check of its own, the same boundary `POST /api/admin/content` above uses.
+
+**Request body:** the existing `ShowCreateRequest` — identical to `POST /api/catalog/shows`'s:
+
+```json
+{
+  "contentId": "...",
+  "venueId": "...",
+  "startTime": "2026-10-01T18:00:00Z",
+  "endTime": "2026-10-01T20:30:00Z"
+}
+```
+
+All four fields are required (`@NotNull`); `endTime` must be after `startTime`.
+
+**Success response — `201 Created`:** the existing `ShowResponse` shape — same as `POST /api/catalog/shows`'s response, and the same `Location` header convention, pointing at the resource's one canonical (non-admin) URI:
+
+```
+Location: /api/catalog/shows/{id}
+```
+```json
+{
+  "id": "...", "contentId": "...", "venueId": "...",
+  "startTime": "2026-10-01T18:00:00Z", "endTime": "2026-10-01T20:30:00Z",
+  "status": "SCHEDULED", "createdAt": "...", "updatedAt": "..."
+}
+```
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation, a malformed `contentId`/`venueId`, or a service-layer rule such as `endTime` not after `startTime`); `404 ENTITY_NOT_FOUND` (`contentId` or `venueId` doesn't reference an existing Content/Venue — the existing `CatalogEntityNotFoundException`/`GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway** — see above).
+
+No `AdminShowCreateRequest` — this endpoint reuses `ShowCreateRequest`/`ShowResponse`/`ShowService.create` exactly as implemented for the existing `POST /api/catalog/shows`; only the path (and the Gateway's authorization rule for it) differs.
+
+**Gateway routing note:** served by a separate explicit route, `admin-shows` (`Path=/api/admin/shows`, no `{id}` segment) — distinct from `admin-show-cancel` (`Path=/api/admin/shows/{id}/cancel`) below, which has a different, longer path shape.
+
+---
+
+## `PUT /api/admin/shows/{id}`
+
+FR-38 — the third admin Show operation, alongside `POST /api/admin/shows` above and `PATCH /api/admin/shows/{id}/cancel` below (same controller, `AdminShowController`).
+
+Full replace of every mutable Show field, including `status` — identical behavior to `PUT /api/catalog/shows/{id}`, reused unchanged via `ShowService.update`. No new transition rule: this endpoint can already set any `status` value today (including `CANCELLED`), exactly as the existing customer-facing route already could.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as `POST /api/admin/shows` above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** the existing `ShowUpdateRequest` — identical shape to `PUT /api/catalog/shows/{id}`'s:
+
+```json
+{
+  "contentId": "...",
+  "venueId": "...",
+  "startTime": "2026-10-01T18:00:00Z",
+  "endTime": "2026-10-01T21:00:00Z",
+  "status": "SCHEDULED"
+}
+```
+
+All five fields are required (`@NotNull`); `endTime` must be after `startTime`.
+
+**Success response — `200 OK`:** the existing `ShowResponse` shape, reflecting the update.
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation, a malformed `id`/`contentId`/`venueId`, or `endTime` not after `startTime`); `404 ENTITY_NOT_FOUND` (`id`, `contentId`, or `venueId` doesn't exist — the existing `CatalogEntityNotFoundException`/`GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+No new request/response DTO or exception type — this endpoint reuses `ShowUpdateRequest`/`ShowResponse`/`ShowService.update` exactly as already implemented for `PUT /api/catalog/shows/{id}`.
+
+**Gateway routing note:** served by a separate explicit route, `admin-show-by-id` (`Path=/api/admin/shows/{id}`) — distinct from the collection-level `admin-shows` (no `{id}` segment) and from `admin-show-cancel` (a longer, `.../cancel`-suffixed path); `{id}` matches exactly one path segment, so this never matches `.../cancel`.
+
+---
+
+## `DELETE /api/admin/shows/{id}`
+
+FR-38 — the fourth admin Show operation, alongside `POST /api/admin/shows`, `PUT /api/admin/shows/{id}` above, and `PATCH /api/admin/shows/{id}/cancel` below (same controller, `AdminShowController`). A genuine hard delete — identical behavior to `DELETE /api/catalog/shows/{id}`, reused unchanged via `ShowService.delete`. There is no soft-delete/status alternative introduced; the existing database FK behavior is unchanged.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** none.
+
+**Success response — `204 No Content`.**
+
+**Error responses:** `400 VALIDATION_ERROR` (malformed `id`); `404 ENTITY_NOT_FOUND` (`id` doesn't exist); `409 DATA_INTEGRITY_CONFLICT` (the Show is still referenced by booking-service's `show_seats`/`bookings` — both `ON DELETE RESTRICT` — not pre-checked, surfaced via the existing `DataIntegrityViolationException` handler); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+No new request/response DTO or exception type — this endpoint reuses `ShowService.delete` and the existing exception handling exactly as already implemented for `DELETE /api/catalog/shows/{id}`.
+
+**Gateway routing note:** **no new route was needed.** `DELETE /api/admin/shows/{id}` is served by the same `admin-show-by-id` route `PUT /api/admin/shows/{id}` already uses above — Spring Cloud Gateway `Path` predicates match regardless of HTTP method, and no route in this project uses a `Method=` predicate, so one route already covers both verbs (the same reasoning that already let `admin-content-by-id` serve both `PUT` and `DELETE /api/admin/content/{id}`).
+
+---
+
 ## `PATCH /api/admin/shows/{id}/cancel`
 
 Phase 13.6.2/13.6.3 — the first admin Show operation. **Owned and implemented by `catalog-service`** (port `8082`), the second `catalog-service` entry on this page (see the note on `POST /api/admin/content` above — this file otherwise still only covers `user-service`).
@@ -243,6 +441,94 @@ Cancels a Show — sets **only** its `status` to `CANCELLED`, leaving `content`,
 No new request/response DTO and no new exception type — this endpoint reuses `ShowResponse` and the existing not-found handling exactly as already implemented for `GET`/`PUT /api/catalog/shows/{id}`.
 
 **Caveat for a browser-based admin client:** the Gateway's CORS configuration (`spring.cloud.gateway.globalcors`) currently allows only `GET`, `POST`, `OPTIONS` — **not** `PATCH`. This endpoint works correctly from a non-browser client (`curl`, a server-to-server call, etc.) today; a browser calling it directly would fail CORS preflight until `PATCH` is added to the allowed methods, which this phase did not change (out of scope — no CORS/security configuration was modified).
+
+---
+
+## `POST /api/admin/venues`
+
+FR-38 — the first admin Venue operation. **Owned and implemented by `catalog-service`** (port `8082`), alongside the Content and Show admin operations above (see the note on `POST /api/admin/content` above — this file otherwise still only covers `user-service`).
+
+Creates a Venue (the physical location where a Show takes place). For the Admin Dashboard's event/show-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-38).
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `catalog-service` has no Spring Security dependency and performs no role check of its own, the same boundary `POST /api/admin/content`/`POST /api/admin/shows` above use.
+
+**Request body:** the existing `VenueRequest` — identical to `POST /api/catalog/venues`'s:
+
+```json
+{
+  "name": "PVR XYZ",
+  "address": "123 Main Street",
+  "city": "Springfield"
+}
+```
+
+`name`, `address`, and `city` are all required (`@NotBlank`).
+
+**Success response — `201 Created`:** the existing `VenueResponse` shape — same as `POST /api/catalog/venues`'s response, and the same `Location` header convention, pointing at the resource's one canonical (non-admin) URI:
+
+```
+Location: /api/catalog/venues/{id}
+```
+```json
+{
+  "id": "...", "name": "PVR XYZ", "address": "123 Main Street", "city": "Springfield",
+  "createdAt": "...", "updatedAt": "..."
+}
+```
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation — a blank `name`/`address`/`city`); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway**, not this service — see above). **No `409` conflict behavior:** `venues` has no unique constraint of any kind (unlike, say, `users.email`), so there is no existing conflict response to preserve or document here.
+
+No `AdminVenueRequest`/`AdminVenueResponse` — this endpoint reuses `VenueRequest`/`VenueResponse`/`VenueService.create` exactly as implemented for the existing `POST /api/catalog/venues`; only the path (and the Gateway's authorization rule for it) differs.
+
+**Gateway routing note:** served by a separate explicit route, `admin-venues` (`Path=/api/admin/venues`) — collection-level only for this phase; a venue delete admin route does not exist yet.
+
+---
+
+## `PUT /api/admin/venues/{id}`
+
+FR-38 — the second admin Venue operation, alongside `POST /api/admin/venues` above (same controller, `AdminVenueController`).
+
+Full replace of every mutable Venue field — identical behavior to `PUT /api/catalog/venues/{id}`, reused unchanged via `VenueService.update`.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as `POST /api/admin/venues` above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** the existing `VenueRequest` — identical shape to `POST /api/admin/venues`'s.
+
+**Success response — `200 OK`:** the existing `VenueResponse` shape, reflecting the update.
+
+**Error responses:** `400 VALIDATION_ERROR` (bean validation, or a malformed `id`); `404 ENTITY_NOT_FOUND` (`id` doesn't exist — the existing `CatalogEntityNotFoundException`/`GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above). No `409` conflict behavior, same reasoning as `POST /api/admin/venues` above.
+
+No new request/response DTO or exception type — this endpoint reuses `VenueRequest`/`VenueResponse`/`VenueService.update` exactly as already implemented for `PUT /api/catalog/venues/{id}`.
+
+**Gateway routing note:** served by a separate explicit route, `admin-venue-by-id` (`Path=/api/admin/venues/{id}`), alongside the existing `admin-venues` route (`Path=/api/admin/venues`, no `{id}` segment).
+
+---
+
+## `DELETE /api/admin/venues/{id}`
+
+FR-38 — the third admin Venue operation, alongside `POST /api/admin/venues` and `PUT /api/admin/venues/{id}` above (same controller, `AdminVenueController`). A genuine hard delete — identical behavior to `DELETE /api/catalog/venues/{id}`, reused unchanged via `VenueService.delete`. There is no soft-delete/status alternative: `Venue` has no status column, and none was introduced.
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway**, same boundary as above.
+
+**Path variable:** `id` — a UUID.
+
+**Request body:** none.
+
+**Success response — `204 No Content`.**
+
+**Error responses:** `400 VALIDATION_ERROR` (malformed `id`); `404 ENTITY_NOT_FOUND` (`id` doesn't exist); `409 DATA_INTEGRITY_CONFLICT` (the Venue is still referenced by a Seat or Show — `fk_seats_venue`/`fk_shows_venue`, both `ON DELETE RESTRICT` — not pre-checked, surfaced via the existing `DataIntegrityViolationException` handler); `401 UNAUTHENTICATED`/`403 FORBIDDEN` (from the Gateway — see above).
+
+No new request/response DTO or exception type — this endpoint reuses `VenueService.delete` and the existing exception handling exactly as already implemented for `DELETE /api/catalog/venues/{id}`.
+
+**Gateway routing note:** **no new route was needed.** `DELETE /api/admin/venues/{id}` is served by the same `admin-venue-by-id` route `PUT /api/admin/venues/{id}` already uses above — Spring Cloud Gateway `Path` predicates match regardless of HTTP method, and no route in this project uses a `Method=` predicate, so one route already covers both verbs (the same reasoning that already let `admin-content-by-id`/`admin-show-by-id` each serve two verbs).
 
 ---
 

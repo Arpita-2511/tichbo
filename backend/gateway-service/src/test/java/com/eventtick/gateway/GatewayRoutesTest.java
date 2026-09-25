@@ -15,7 +15,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 7.1 (plus the Phase 13.5.3/13.6.3/13.7.1/13.7.2 admin routes): every route exists, each
+ * Phase 7.1 (plus the Phase 13.5.3/13.6.3/13.7.1/13.7.2/FR-37/FR-38 admin
+ * routes, most recently {@code admin-show-by-id}): every route exists, each
  * request path lands on the right upstream, and nothing rewrites the path
  * (no filters on any route). Does not start the upstream services or send
  * real traffic — it asks the gateway's own route table which route a given
@@ -48,10 +49,12 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlySevenRoutesAreRegistered() {
+    void exactlyFifteenRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
-                        "admin-content", "admin-show-cancel", "admin-bookings", "admin-show-seat-activity");
+                        "admin-content", "admin-content-by-id", "admin-show-cancel", "admin-shows",
+                        "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
+                        "admin-show-seat-activity", "admin-users", "admin-users-plan", "admin-users-role");
     }
 
     @Test
@@ -84,10 +87,37 @@ class GatewayRoutesTest {
     @Test
     void adminContentRoute_matchesOnlyItsExactPath_notASubPathOrAnotherAdminEndpoint() {
         // No "/**" on this predicate: it is deliberately this one path,
-        // not a catch-all — a sub-path or a different future admin
-        // endpoint must not silently start routing through it.
-        assertThat(matchFor("/api/admin/content/extra")).isEmpty();
-        assertThat(matchFor("/api/admin/users")).isEmpty();
+        // not a catch-all. /api/admin/content/extra is now a real route of
+        // its own (admin-content-by-id, FR-38) rather than unrouted, and
+        // /api/admin/users is a real route of its own (FR-37 fix) — this
+        // only asserts neither is *this* route.
+        assertThat(matchFor("/api/admin/content/extra")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content/extra").get().getId()).isEqualTo("admin-content-by-id");
+        assertThat(matchFor("/api/admin/users")).isNotEmpty();
+        assertThat(matchFor("/api/admin/users").get().getId()).isEqualTo("admin-users");
+    }
+
+    @Test
+    void adminContentByIdPath_goesToCatalogService() {
+        // FR-38: PUT/DELETE /api/admin/content/{id}. A Path predicate
+        // doesn't distinguish HTTP method, so one route serves both.
+        assertRoutedTo("/api/admin/content/123e4567-e89b-12d3-a456-426614174000",
+                "admin-content-by-id", "http://localhost:8082");
+    }
+
+    @Test
+    void adminContentByIdRoute_matchesOnlyThatExactShape_notTheCollectionPathOrAnUnrelatedAdminPath() {
+        // Not /api/admin/content/** — a deeper sub-path must not collide,
+        // and this must not swallow the collection-level admin-content
+        // route or any other existing admin route.
+        assertThat(matchFor("/api/admin/content/123e4567-e89b-12d3-a456-426614174000/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+        assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
     }
 
     @Test
@@ -100,14 +130,150 @@ class GatewayRoutesTest {
 
     @Test
     void adminShowCancelRoute_matchesOnlyThatExactShape_notAGenericAdminShowsPath() {
-        // Not /api/admin/shows/** — a plain "list" or "get by id" admin
-        // shows path (if one is ever added) must not silently route here.
-        assertThat(matchFor("/api/admin/shows")).isEmpty();
-        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        // Not /api/admin/shows/** — /api/admin/shows and a bare
+        // /api/admin/shows/{id} are now real routes of their own
+        // (admin-shows, admin-show-by-id, FR-38) rather than unrouted, so
+        // this only asserts neither is *this* (cancel) route.
+        assertThat(matchFor("/api/admin/shows")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows").get().getId()).isEqualTo("admin-shows");
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-show-by-id");
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel/extra")).isEmpty();
         // And it must not overlap with the other admin route either.
         assertThat(matchFor("/api/admin/content")).isNotEmpty();
         assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+    }
+
+    @Test
+    void adminShowsPath_goesToCatalogService() {
+        // FR-38: POST /api/admin/shows — the collection-level route,
+        // separate from admin-show-cancel (different path shape entirely).
+        assertRoutedTo("/api/admin/shows", "admin-shows", "http://localhost:8082");
+    }
+
+    @Test
+    void adminShowsRoute_doesNotCollideWithAdminShowCancelOrAdminShowById() {
+        // admin-show-cancel must keep working, and a bare
+        // /api/admin/shows/{id} is now a real route of its own
+        // (admin-show-by-id, FR-38) rather than unrouted — neither is
+        // *this* (collection) route.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-show-by-id");
+    }
+
+    @Test
+    void adminShowByIdPath_goesToCatalogService() {
+        // FR-38: PUT and DELETE /api/admin/shows/{id} both resolve here —
+        // Spring Cloud Gateway Path predicates are not HTTP-method-specific
+        // (no Method= predicate on this or any route in this project), so
+        // one route already serves both verbs; no second route was added
+        // for DELETE. assertRoutedTo/matchFor probe the route table only
+        // by path (see their own implementation), which is exactly why a
+        // single check here is representative of every verb against this
+        // path shape.
+        assertRoutedTo("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000",
+                "admin-show-by-id", "http://localhost:8082");
+    }
+
+    @Test
+    void everyAdminShowOperation_resolvesToItsOwnCorrectRoute() {
+        // FR-38: consolidated proof that POST (create), PUT/DELETE
+        // (admin-show-by-id, same path shape) and PATCH .../cancel each
+        // still resolve to the correct, distinct route now that all four
+        // coexist — no route was added for DELETE specifically, since
+        // admin-show-by-id already covers it.
+        assertThat(matchFor("/api/admin/shows")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows").get().getId()).isEqualTo("admin-shows");
+
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-show-by-id");
+
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
+    }
+
+    @Test
+    void adminShowByIdRoute_doesNotStealTheCancelRoute_orTheCollectionRoute() {
+        // A longer path (.../cancel) must still resolve to admin-show-cancel,
+        // not admin-show-by-id, and the bare collection path must still
+        // resolve to admin-shows, not admin-show-by-id.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
+        assertThat(matchFor("/api/admin/shows")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows").get().getId()).isEqualTo("admin-shows");
+        // And no deeper sub-path collides either.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/extra")).isEmpty();
+    }
+
+    @Test
+    void adminVenuesPath_goesToCatalogService() {
+        // FR-38: the first admin Venue route, same discipline as
+        // admin-content/admin-shows — the collection-level path only.
+        assertRoutedTo("/api/admin/venues", "admin-venues", "http://localhost:8082");
+    }
+
+    @Test
+    void adminVenuesRoute_matchesOnlyThatExactPath_notASubPathOrAnUnrelatedAdminPath() {
+        // Not /api/admin/venues/** — a bare by-id venue path is now a real
+        // route of its own (admin-venue-by-id, FR-38) rather than unrouted,
+        // and this must not overlap with any other existing admin route.
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-venue-by-id");
+        assertThat(matchFor("/api/admin/venues/extra")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues/extra").get().getId()).isEqualTo("admin-venue-by-id");
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
+        assertThat(matchFor("/api/admin/shows")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows").get().getId()).isEqualTo("admin-shows");
+        assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+    }
+
+    @Test
+    void adminVenueByIdPath_goesToCatalogService() {
+        // FR-38: PUT and DELETE /api/admin/venues/{id} both resolve here —
+        // Spring Cloud Gateway Path predicates are not HTTP-method-specific
+        // (no Method= predicate on this or any route in this project), so
+        // one route already serves both verbs; no second route was added
+        // for DELETE, mirroring admin-content-by-id/admin-show-by-id.
+        assertRoutedTo("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000",
+                "admin-venue-by-id", "http://localhost:8082");
+    }
+
+    @Test
+    void everyAdminVenueOperation_resolvesToItsOwnCorrectRoute() {
+        // FR-38: consolidated proof that POST (create) and PUT/DELETE
+        // (admin-venue-by-id, same path shape) both still resolve to the
+        // correct, distinct route — no route was added for DELETE
+        // specifically, since admin-venue-by-id already covers it.
+        assertThat(matchFor("/api/admin/venues")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues").get().getId()).isEqualTo("admin-venues");
+
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-venue-by-id");
+    }
+
+    @Test
+    void adminVenueByIdRoute_doesNotStealTheCollectionRoute() {
+        // The bare collection path must still resolve to admin-venues, not
+        // admin-venue-by-id, and vice versa — the two stay distinct.
+        assertThat(matchFor("/api/admin/venues")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues").get().getId()).isEqualTo("admin-venues");
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-venue-by-id");
+        // No deeper sub-path collides either.
+        assertThat(matchFor("/api/admin/venues/123e4567-e89b-12d3-a456-426614174000/extra")).isEmpty();
     }
 
     @Test
@@ -140,16 +306,55 @@ class GatewayRoutesTest {
 
     @Test
     void adminShowSeatActivityRoute_matchesOnlyThatExactShape_notAnUnrelatedAdminPath() {
-        // Not /api/admin/shows/** — a bare show id, and the sibling
-        // admin-show-cancel path (same prefix, different final segment),
-        // must not collide with this route.
-        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        // Not /api/admin/shows/** — a bare show id is now a real route of
+        // its own (admin-show-by-id, FR-38) rather than unrouted, and the
+        // sibling admin-show-cancel path (same prefix, different final
+        // segment) must not collide with this route either.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-show-by-id");
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seat-activity/extra")).isEmpty();
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
         assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
                 .isEqualTo("admin-show-cancel");
         assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
         assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+    }
+
+    @Test
+    void adminUsersPath_goesToUserService() {
+        // FR-37 fix: the pre-existing gap — GET /api/admin/users (Phase
+        // 13.4) had no route at all — closed with the same
+        // explicit-per-endpoint discipline as the other admin routes.
+        assertRoutedTo("/api/admin/users", "admin-users", "http://localhost:8081");
+    }
+
+    @Test
+    void adminUsersPlanAndRolePaths_goToUserService() {
+        assertRoutedTo("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/plan",
+                "admin-users-plan", "http://localhost:8081");
+        assertRoutedTo("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/role",
+                "admin-users-role", "http://localhost:8081");
+    }
+
+    @Test
+    void adminUsersRoutes_matchOnlyTheirExactShape_notEachOtherOrAnUnrelatedAdminPath() {
+        // Not /api/admin/users/** — a bare user id, and a plan path, must
+        // not collide with the role path or vice versa.
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/plan/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/role/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/plan")).isNotEmpty();
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/plan").get().getId())
+                .isEqualTo("admin-users-plan");
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/role")).isNotEmpty();
+        assertThat(matchFor("/api/admin/users/123e4567-e89b-12d3-a456-426614174000/role").get().getId())
+                .isEqualTo("admin-users-role");
+        // And it must not overlap with the unrelated existing admin routes either.
+        assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
+        assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
     }
 
     @Test

@@ -2120,13 +2120,26 @@ The architecture has now been generalized from a movie-specific application to a
 
 ---
 
-# 45. Admin Dashboard Architecture (Phase 13 — Design Only)
+# 45. Admin Dashboard Architecture (Phase 13 — In Progress)
 
-**Nothing in this section is implemented.** It documents the intended
-architecture for the Admin Dashboard ahead of implementation — no
-controller, service, repository, database migration, or frontend code
-exists for it yet. See `docs/requirements.md` §15 (FR-35–FR-40) for the
-corresponding numbered requirements.
+**Implementation is in progress.** This section documents the architecture
+for the Admin Dashboard's backend API surface; the table below tracks
+which requirements are actually implemented against it. See
+`docs/requirements.md` §15 (FR-35–FR-40) for the corresponding numbered
+requirements and their status.
+
+| Requirement | Status |
+|---|---|
+| FR-35 Admin Dashboard Access Control | **Complete** |
+| FR-36 Admin Overview and Statistics | Not implemented |
+| FR-37 Admin User Management | Partial — list implemented; plan/role change not implemented |
+| FR-38 Admin Event/Show Management | Partial — Content create and Show cancel implemented; remaining Content/Show operations and all Venue admin management not implemented |
+| FR-39 Admin Booking Management | **Complete** |
+| FR-40 Admin Rate-Limit Visibility | Not implemented |
+
+No frontend code exists for the Admin Dashboard for any requirement,
+complete or not — every implemented item so far is a backend API endpoint
+only, reached through the Gateway exactly like any other endpoint.
 
 ## 45.1 Purpose and Access
 
@@ -2223,10 +2236,13 @@ reconsidered only in a later phase if at all:
   (§29–§31, §25, §27–§28 remain as previously documented, unaffected by
   this section), and Docker/deployment changes.
 
-## Next Phase
+## Current Status
 
-The API Gateway (§5–§6):
-request routing to the three services, JWT validation at the edge, and
-eventually dynamic rate limiting backed by Redis (§19–§22). None of that
-exists yet — the Gateway remains the largest unbuilt piece of the
-project's stated primary objective.
+The API Gateway (§5–§6) is implemented: request routing to the three
+services, JWT validation at the edge, and dynamic rate limiting backed by
+Redis (§19–§22) are all in place.
+
+The Admin Dashboard (§45) is the project's current area of work. Phase 13
+implementation is in progress — see §45's status table and
+`docs/requirements.md` §15 for the current status of each requirement
+(FR-35–FR-40).

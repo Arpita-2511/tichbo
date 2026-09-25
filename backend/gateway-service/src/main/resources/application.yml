@@ -121,6 +121,16 @@ spring:
           predicates:
             - Path=/api/admin/content
 
+        # FR-38: PUT/DELETE /api/admin/content/{id} — a separate route
+        # because Path=/api/admin/content (above) matches only that exact
+        # path, not a sub-path with an id segment. Path predicates don't
+        # distinguish HTTP method, so this one route already covers both
+        # PUT and DELETE for the same shape — not /api/admin/content/**.
+        - id: admin-content-by-id
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/content/{id}
+
         # Phase 13.6.3: the second admin route, following the same
         # explicit-per-endpoint discipline as admin-content above — not
         # /api/admin/shows/** (which would also match, say, a future
@@ -132,6 +142,44 @@ spring:
           uri: http://localhost:8082
           predicates:
             - Path=/api/admin/shows/{id}/cancel
+
+        # FR-38: POST /api/admin/shows — the collection-level route,
+        # exactly Path=/api/admin/shows (no {id} segment), so it cannot
+        # collide with admin-show-cancel above. Not /api/admin/shows/**.
+        - id: admin-shows
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/shows
+
+        # FR-38: PUT /api/admin/shows/{id} — a separate route because
+        # Path=/api/admin/shows (above) matches only that exact collection
+        # path, not a sub-path with an id segment, and
+        # Path=/api/admin/shows/{id}/cancel (above) is a longer, distinct
+        # shape. {id} is one path segment, so this only matches a bare
+        # .../shows/<id>, never .../shows/<id>/cancel. Not
+        # /api/admin/shows/** and no route for show delete yet.
+        - id: admin-show-by-id
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/shows/{id}
+
+        # FR-38: the first admin Venue route, same explicit-per-endpoint
+        # discipline as admin-content/admin-shows — the collection-level
+        # path only, not /api/admin/venues/** and not a route for venue
+        # delete yet (a separate future slice).
+        - id: admin-venues
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/venues
+
+        # FR-38: PUT /api/admin/venues/{id} — a separate route because
+        # Path=/api/admin/venues (above) matches only that exact collection
+        # path, not a sub-path with an id segment. Same pattern as
+        # admin-content-by-id/admin-show-by-id.
+        - id: admin-venue-by-id
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/admin/venues/{id}
 
         # Phase 13.7.1: the third admin route, same explicit-per-endpoint
         # discipline as admin-content/admin-show-cancel — not
@@ -152,6 +200,32 @@ spring:
           uri: http://localhost:8083
           predicates:
             - Path=/api/admin/shows/{showId}/seat-activity
+
+        # Phase 13 FR-37 fix: GET /api/admin/users (Phase 13.4) has been
+        # implemented since before admin-content existed, but never got its
+        # own explicit route — a pre-existing gap found by the FR-37
+        # inspection. Added now, same discipline as every other admin
+        # route above: this one path only, not /api/admin/users/** (which
+        # would also swallow the two routes just below).
+        - id: admin-users
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/admin/users
+
+        # Phase 13 FR-37: the remaining two admin User Management
+        # operations. {userId} is a URI template variable (one path
+        # segment), so each only ever matches its own exact final segment
+        # — .../users/<id>/plan never matches .../users/<id>/role or a
+        # bare .../users/<id>.
+        - id: admin-users-plan
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/admin/users/{userId}/plan
+
+        - id: admin-users-role
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/admin/users/{userId}/role
 
 # Phase 7.3: how the gateway validates the JWTs issued by user-service. These
 # must match user-service's jwt.secret / jwt.issuer / jwt.audience — same

@@ -4,6 +4,7 @@ import com.eventtick.user.dto.ErrorResponse;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -35,6 +36,26 @@ public class GlobalExceptionHandler {
         return respond(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", ex.getMessage());
     }
 
+    /** FR-37: changing a user's plan to one that doesn't exist. */
+    @ExceptionHandler(PlanNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handlePlanNotFound(PlanNotFoundException ex) {
+        return respond(HttpStatus.NOT_FOUND, "PLAN_NOT_FOUND", ex.getMessage());
+    }
+
+    /**
+     * FR-37: an administrator tried to change their own role. The actor is
+     * generally authorized to reach this endpoint (a real ADMIN token) —
+     * this is a targeted business-rule conflict on this specific request,
+     * not a role/authorization failure, so it maps to 409 like
+     * booking-service's {@code InvalidBookingStateException} rather than
+     * 403 (which this project reserves for "authenticated but lacking the
+     * required role," a Spring-Security-level concept).
+     */
+    @ExceptionHandler(SelfRoleModificationException.class)
+    public ResponseEntity<ErrorResponse> handleSelfRoleModification(SelfRoleModificationException ex) {
+        return respond(HttpStatus.CONFLICT, "SELF_ROLE_MODIFICATION_NOT_ALLOWED", ex.getMessage());
+    }
+
     /**
      * A race between the registration pre-check and the database's own
      * {@code uq_users_email} constraint (two concurrent registrations for
@@ -63,6 +84,20 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
         String message = "Invalid value for '" + ex.getName() + "': " + ex.getValue();
         return respond(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", message);
+    }
+
+    /**
+     * FR-37: a request body that Jackson can't parse — most notably a
+     * {@code role} value outside the {@code UserRole} enum (e.g.
+     * {@code "SUPERADMIN"}), which fails during JSON deserialization,
+     * before {@code @Valid} bean validation ever runs. Also covers plain
+     * malformed JSON. Kept generic (no raw Jackson message passed through)
+     * to avoid leaking internal type/field details to the client.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMalformedRequestBody(HttpMessageNotReadableException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
+                "Request body is malformed or contains an invalid value.");
     }
 
     private ResponseEntity<ErrorResponse> respond(HttpStatus status, String errorCode, String message) {

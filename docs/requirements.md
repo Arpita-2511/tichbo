@@ -718,12 +718,26 @@ Additional administrative functionality may be introduced later.
 
 **Implementation status (Phase 13):** the requirements below give this
 section concrete, numbered requirements for the first Admin Dashboard
-increment. **Design only — nothing in this section is implemented yet.**
-No controller, service, repository, database migration, or frontend code
-exists for it. "Rate-limit configuration" above refers to the Phase 12
+increment. **Implementation is in progress:** FR-35 and FR-39 are
+complete, FR-37 and FR-38 are partially implemented, and FR-36 and FR-40
+are not yet implemented — see the table below for the current status of
+each requirement. "Rate-limit configuration" above refers to the Phase 12
 policy matrix, which stays configuration-driven (`application.yml`/env
 vars) — Phase 13 adds read-only *visibility* into it, not runtime editing;
 see FR-40.
+
+| Requirement | Status | Notes |
+|---|---|---|
+| FR-35 Admin Dashboard Access Control | **Complete** | Enforced at the API Gateway (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`). |
+| FR-36 Admin Overview and Statistics | **Not implemented** | No endpoint exposes summary counts (users/content-shows/bookings) or rate-limit activity yet. |
+| FR-37 Admin User Management | **Partial** | `GET /api/admin/users` (list) is implemented; changing a user's plan or role is not implemented. |
+| FR-38 Admin Event/Show Management | **Partial** | `POST /api/admin/content` and `PATCH /api/admin/shows/{id}/cancel` are implemented; remaining Content update/remove, further Show create/update/remove capabilities, and all Venue admin management are not implemented. |
+| FR-39 Admin Booking Management | **Complete** | `GET /api/admin/bookings` and `GET /api/admin/shows/{showId}/seat-activity` are implemented; the existing `GET /api/bookings/{bookingId}` provides a booking's details/status. |
+| FR-40 Admin Rate-Limit Visibility | **Not implemented** | No endpoint exposes the active policy matrix or recent `429` activity. |
+
+No frontend/UI exists for any of the above — every implemented item to
+date is backend API surface only, reached the same way as any other
+endpoint (`docs/api-contracts.md`).
 
 ## FR-35: Admin Dashboard Access Control
 
