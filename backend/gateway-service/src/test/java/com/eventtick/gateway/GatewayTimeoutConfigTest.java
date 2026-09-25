@@ -51,7 +51,8 @@ class GatewayTimeoutConfigTest {
         List<Route> routes = routeLocator.getRoutes().collectList().block();
 
         assertThat(routes).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "admin-content");
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
+                        "admin-content", "admin-show-cancel");
         assertThat(routes).allSatisfy(route ->
                 assertThat(route.getMetadata()).as("route %s has no per-route timeout override", route.getId())
                         .doesNotContainKeys("connect-timeout", "response-timeout"));

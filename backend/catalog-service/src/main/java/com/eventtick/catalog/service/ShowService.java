@@ -107,6 +107,24 @@ public class ShowService {
     }
 
     /**
+     * Phase 13.6.2: the admin cancel operation
+     * ({@code PATCH /api/admin/shows/{id}/cancel}) — sets only
+     * {@code status}, leaving {@code content}/{@code venue}/{@code startTime}/
+     * {@code endTime} untouched, unlike {@link #update}, which replaces
+     * every mutable field. This is deliberately permissive: any current
+     * status, including an already-{@code CANCELLED} or {@code COMPLETED}
+     * show, transitions to {@code CANCELLED} — no 409 transition rule is
+     * enforced yet; that is an intentional, deferred decision for this
+     * phase, not an oversight, and {@link #update} is unchanged.
+     */
+    @Transactional
+    public Show cancel(UUID id) {
+        Show show = getById(id);
+        show.setStatus(ShowStatus.CANCELLED);
+        return showRepository.save(show);
+    }
+
+    /**
      * Deletes a Show row. Will fail at the database level if
      * booking-service's {@code show_seats.show_id} or
      * {@code bookings.show_id} still reference it (both

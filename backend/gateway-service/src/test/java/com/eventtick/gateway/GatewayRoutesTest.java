@@ -15,7 +15,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Phase 7.1 (plus the Phase 13.5.3 admin route): every route exists, each
+ * Phase 7.1 (plus the Phase 13.5.3/13.6.3 admin routes): every route exists, each
  * request path lands on the right upstream, and nothing rewrites the path
  * (no filters on any route). Does not start the upstream services or send
  * real traffic — it asks the gateway's own route table which route a given
@@ -48,9 +48,10 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyFourRoutesAreRegistered() {
+    void exactlyFiveRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "admin-content");
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
+                        "admin-content", "admin-show-cancel");
     }
 
     @Test
@@ -87,6 +88,26 @@ class GatewayRoutesTest {
         // endpoint must not silently start routing through it.
         assertThat(matchFor("/api/admin/content/extra")).isEmpty();
         assertThat(matchFor("/api/admin/users")).isEmpty();
+    }
+
+    @Test
+    void adminShowCancelPath_goesToCatalogService() {
+        // Phase 13.6.3: a second explicit admin route, same discipline as
+        // admin-content — one endpoint, one route, to its real owning service.
+        assertRoutedTo("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel",
+                "admin-show-cancel", "http://localhost:8082");
+    }
+
+    @Test
+    void adminShowCancelRoute_matchesOnlyThatExactShape_notAGenericAdminShowsPath() {
+        // Not /api/admin/shows/** — a plain "list" or "get by id" admin
+        // shows path (if one is ever added) must not silently route here.
+        assertThat(matchFor("/api/admin/shows")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel/extra")).isEmpty();
+        // And it must not overlap with the other admin route either.
+        assertThat(matchFor("/api/admin/content")).isNotEmpty();
+        assertThat(matchFor("/api/admin/content").get().getId()).isEqualTo("admin-content");
     }
 
     @Test

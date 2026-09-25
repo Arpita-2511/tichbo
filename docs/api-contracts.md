@@ -214,6 +214,38 @@ No `AdminContentRequest`/`AdminContentResponse` — this endpoint reuses `Conten
 
 ---
 
+## `PATCH /api/admin/shows/{id}/cancel`
+
+Phase 13.6.2/13.6.3 — the first admin Show operation. **Owned and implemented by `catalog-service`** (port `8082`), the second `catalog-service` entry on this page (see the note on `POST /api/admin/content` above — this file otherwise still only covers `user-service`).
+
+Cancels a Show — sets **only** its `status` to `CANCELLED`, leaving `content`, `venue`, `startTime`, and `endTime` untouched. A dedicated action, not a shorthand for the existing `PUT /api/catalog/shows/{id}` (a full replace of every mutable field, `status` included) — cancelling never risks accidentally changing anything else about the show. For the Admin Dashboard's event/show-management view (`docs/architecture.md` §45.2/§45.3, `docs/requirements.md` FR-38).
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** `role=ADMIN`. Enforced **only at the API Gateway** (`/api/admin/** -> hasAuthority("ROLE_ADMIN")`, Phase 13.3) — `catalog-service` has no Spring Security dependency and performs no role check of its own, the same boundary `POST /api/admin/content` above uses. The same pre-existing, disclosed condition applies: called directly against `catalog-service` (bypassing the Gateway), this accepts any request the same way the existing `PUT /api/catalog/shows/{id}` already does (which can already set `status=CANCELLED` today, with no role check either).
+
+**Request body:** none.
+
+**Cancellation semantics — intentionally permissive in this phase:** any current status transitions to `CANCELLED`, including `SCHEDULED -> CANCELLED`, `COMPLETED -> CANCELLED`, and `CANCELLED -> CANCELLED` (a harmless no-op). There is **no** `409`-style transition rule yet (e.g. rejecting cancellation of an already-`COMPLETED` show) — a deliberate, deferred decision, not an oversight.
+
+**Success response — `200 OK`:** the existing `ShowResponse` shape, with `status` now `CANCELLED` and every other field exactly as it was before the call:
+
+```json
+{
+  "id": "...", "contentId": "...", "venueId": "...",
+  "startTime": "2026-10-01T18:00:00Z", "endTime": "2026-10-01T20:30:00Z",
+  "status": "CANCELLED", "createdAt": "...", "updatedAt": "..."
+}
+```
+
+**Error responses:** `404 ENTITY_NOT_FOUND` (unknown id, the existing `CatalogEntityNotFoundException`/`GlobalExceptionHandler`, unchanged); `401 UNAUTHENTICATED` (missing/invalid token, from the Gateway); `403 FORBIDDEN` (authenticated but not `ADMIN`, from the **Gateway** — see above).
+
+No new request/response DTO and no new exception type — this endpoint reuses `ShowResponse` and the existing not-found handling exactly as already implemented for `GET`/`PUT /api/catalog/shows/{id}`.
+
+**Caveat for a browser-based admin client:** the Gateway's CORS configuration (`spring.cloud.gateway.globalcors`) currently allows only `GET`, `POST`, `OPTIONS` — **not** `PATCH`. This endpoint works correctly from a non-browser client (`curl`, a server-to-server call, etc.) today; a browser calling it directly would fail CORS preflight until `PATCH` is added to the allowed methods, which this phase did not change (out of scope — no CORS/security configuration was modified).
+
+---
+
 ## CORS (browser clients)
 
 Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.

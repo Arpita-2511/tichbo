@@ -38,7 +38,22 @@ class GatewayCorsTest {
                 .exchange()
                 .expectStatus().isOk()
                 .expectHeader().valueEquals("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
-                .expectHeader().valueEquals("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+                .expectHeader().valueEquals("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+    }
+
+    @Test
+    void preflightForAdminShowCancel_requestingPatch_isAccepted() {
+        // Phase 13.6.4: the Admin Dashboard's real use case — a browser
+        // preflighting PATCH /api/admin/shows/{id}/cancel must now be
+        // accepted, not just GET/POST as before.
+        client.options().uri(GATEWAY + "/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")
+                .header("Origin", ALLOWED_ORIGIN)
+                .header("Access-Control-Request-Method", "PATCH")
+                .header("Access-Control-Request-Headers", "authorization")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().valueEquals("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
+                .expectHeader().valueEquals("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
     }
 
     @Test
