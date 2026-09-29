@@ -18,4 +18,8 @@ public class InvalidSeatStateException extends RuntimeException {
     public InvalidSeatStateException(UUID showSeatId, ShowSeatStatus expected, ShowSeatStatus actual) {
         super("ShowSeat " + showSeatId + " must be " + expected + " but was " + actual + ".");
     }
+
+    public InvalidSeatStateException(UUID showSeatId, String reason) {
+        super("ShowSeat " + showSeatId + " " + reason + ".");
+    }
 }

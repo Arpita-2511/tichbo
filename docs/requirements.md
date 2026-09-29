@@ -784,6 +784,12 @@ content: at minimum, create/update/remove Content, Shows, and Venues.
 This capability is owned by Catalog Service (content, venues, seats,
 shows — §8–§12, §17).
 
+**Authorization (Phase 15 Step 4 follow-up).** Creating, updating and
+deleting content, venues, seats and shows is administrator-only, including
+through the non-admin `/api/catalog/**` paths (previously any authenticated
+customer could). Enforced at the Gateway; reads remain open to any
+authenticated user. See `docs/architecture.md` §25.5.
+
 ---
 
 ## FR-39: Admin Booking Management
@@ -900,6 +906,10 @@ SeatReleased
 The exact event model will be defined during implementation.
 
 Asynchronous messaging is not required for the initial Gateway implementation.
+
+**The event model above is now defined — see §27 (Phase 16) below and
+`docs/architecture.md` §47** — written once the domain model these events
+describe actually existed, rather than at Phase 1 when it did not.
 
 ---
 
@@ -1065,6 +1075,16 @@ Administrators can modify rate-limit policies.
 
 A user can access only their own booking information unless authorized as an administrator.
 
+**Implemented (Phase 15 Step 4 follow-up).** Previously not enforced: any
+authenticated customer could read, list and cancel another customer's
+bookings. Now enforced in Booking Service from the caller's validated JWT:
+a booking is readable by its owner or an administrator (another customer →
+`403`; nonexistent → `404`), a customer's booking list contains only their
+own (an administrator may list all), and only the owner may cancel (an
+administrator may not — FR-39 is read-only). Payment-service reaches
+Booking Service through a separate `/internal/**` surface that the Gateway
+does not route. See `docs/architecture.md` §25.5.
+
 ## BR-08
 
 A booking must pass the required payment state before being finalized when payment is enabled.
@@ -1222,6 +1242,369 @@ The requirements have now been generalized from a movie-focused platform to a mu
 At the time this section was written (end of Phase 1), the plan for what
 came next was: build the API Gateway (Frontend ↔ Authentication
 integration was already done — see above). That work is long since
-complete, along with every phase after it through Phase 13 (the Admin
-Dashboard) — see `docs/architecture.md` §45 for current Admin Dashboard
-status, and §15 above for FR-35–FR-40.
+complete, along with every phase after it through Phase 14 (Monitoring) —
+see `docs/architecture.md` §45 for current Admin Dashboard status, §46 for
+Monitoring, and §15 above for FR-35–FR-40. Phase 15 (Payment Integration):
+Step 1 (design) and Step 2 (a `payment-service` backend foundation) are
+both complete — see §26 below for exactly which requirements that covers,
+and which remain deferred.
+
+---
+
+# 26. Payment Requirements — Phase 15 (Step 1: Designed; Step 2: Implemented)
+
+**Status: FR-41–FR-50 are implemented** (a real
+`payment-service`, `database/migrations/0011_create_payments_table` and
+`0012_add_booking_sync_status_to_payments`, the three API endpoints, and the
+Gateway route all exist and are tested). Step 3 added FR-45 (expiration),
+FR-45a (reconciliation), and FR-45b (state machine). Still deferred: a
+customer-facing abandon-checkout action, a real provider/webhooks, and a
+frontend payment UI.
+This section adds detailed requirements on top of the original §12 (FR-18)
+and §21 (BR-08), which are left exactly as originally written — this
+section doesn't replace them, it fills in the detail they always deferred
+("payment may be simulated... possible states include...").
+
+Full architectural reasoning (service boundary, state machine, consistency
+strategy, idempotency, security, data model) is in `docs/architecture.md`
+§25.1 (design) and §25.2 (implementation); the API contract is in
+`docs/api-contracts.md`'s Payment API section. This section states the
+requirements those documents satisfy.
+
+## FR-41: Payment Creation — IMPLEMENTED
+
+The system shall let a customer initiate a payment for exactly one booking
+they own. The charged amount shall be computed server-side from that
+booking's own `total_amount` (already stored, per FR-13) — never accepted
+as a client-supplied value, so a client cannot alter what it is charged.
+
+`POST /api/payments` (`PaymentController`/`PaymentService`): `amount` is not
+even a field `CreatePaymentRequest` accepts; the amount always comes from
+calling `booking-service`'s own `GET /api/bookings/{id}` (`BookingServiceClient`).
+
+## FR-42: Payment Status — IMPLEMENTED
+
+The system shall expose a payment's current lifecycle status, retrievable
+independently of the original creation request (so a client that lost the
+original response — timeout, refresh, different device — can still learn
+the outcome).
+
+`GET /api/payments/{paymentId}` and `GET /api/payments?bookingId=`.
+
+## FR-43: Payment Success Handling — IMPLEMENTED
+
+On a successful payment, the system shall transition the associated
+booking out of `PENDING` (FR-13/FR-18) into `CONFIRMED`, using the booking
+lifecycle's existing confirmation mechanism (§14) rather than a new,
+parallel one.
+
+`BookingServiceClient.confirmBooking` calls booking-service's internal
+`POST /internal/bookings/{id}/confirm` (Gateway-unroutable). Confirmation is
+**payment-driven only**: a customer cannot confirm a booking, and neither can
+an administrator (FR-39 is read-only) — the former public
+`POST /api/bookings/{id}/confirm`, which let any signed-in customer confirm an
+unpaid booking, was removed (Phase 15 Step 4). It now answers `403` for any
+valid token and `401` otherwise. A payment reaching `SUCCESS` is therefore
+required for a booking to become `CONFIRMED`. See `docs/architecture.md`
+§25.5.
+
+## FR-44: Payment Failure Handling — IMPLEMENTED (interim mechanism)
+
+On a failed, cancelled, or expired payment, the system shall release the
+booking's held seats and move the booking to a terminal non-`CONFIRMED`
+state, consistent with BR-08 ("a booking must pass the required payment
+state before being finalized when payment is enabled").
+
+Implemented for the `FAILED` and (Step 3) `EXPIRED` transitions (`CANCELLED`
+has no customer-facing trigger yet). `BookingServiceClient.releaseBooking`
+reuses booking-service's existing `POST /api/bookings/{id}/cancel` as the
+Step 1 design's documented **interim** option — booking-service has no
+dedicated "fail" transition yet (`BookingStatus.FAILED` remains reachable
+in the data model but unused by any code path), so a payment failure
+currently lands the booking in `CANCELLED`, not `FAILED`. See
+`docs/architecture.md` §25.2 for why this was kept as the smallest
+explicit change rather than modifying booking-service in this step.
+
+## FR-45: Payment Expiration — IMPLEMENTED (Phase 15 Step 3)
+
+A payment left in an in-flight state for longer than a configured timeout
+shall be automatically treated as expired, independent of whether the
+underlying booking itself has any seat-hold expiry mechanism (which does
+not exist yet — see `docs/architecture.md` §16).
+
+Implemented: a scheduled sweep moves payments `PENDING` longer than
+`payment.expiration-minutes` (default 15) to `EXPIRED` via a conditional
+database update, then releases the booking. Idempotent and safe across
+repeated runs and multiple instances. See `docs/architecture.md` §25.3.
+
+## FR-45a: Payment/Booking Reconciliation — IMPLEMENTED (Phase 15 Step 3)
+
+If a payment reaches `SUCCESS`, `FAILED`, or `EXPIRED` but booking-service
+does not acknowledge the corresponding confirm/cancel call, the payment
+status shall remain unchanged and the call shall be retried automatically
+until acknowledged, without creating duplicate bookings or payments and
+without re-invoking the payment provider. Backed by
+`payments.booking_sync_status` and a scheduled reconciliation sweep; retries
+are safe because booking-service's confirm/cancel are idempotent on an
+already-`CONFIRMED`/`CANCELLED` booking. Internal only — no public endpoint.
+
+## FR-45b: Payment State Machine — IMPLEMENTED (Phase 15 Step 3)
+
+Payment status transitions shall be validated in one place. Allowed:
+`CREATED -> PENDING | CANCELLED`; `PENDING -> SUCCESS | FAILED | EXPIRED |
+CANCELLED`. `SUCCESS`, `FAILED`, `EXPIRED`, `CANCELLED` are terminal.
+`CREATED -> CANCELLED` is valid in the state machine, but no customer-facing
+action triggers it yet (deferred).
+
+## FR-46: Idempotent Payment Creation — IMPLEMENTED
+
+The system shall accept a client-supplied idempotency key on payment
+creation. A repeated request with the same key and the same booking shall
+return the existing payment record rather than creating a duplicate or
+re-charging. A repeated request with the same key but different booking
+data shall be rejected as a conflict, not silently processed.
+
+Phase 15 Step 4 (live test): this also holds for requests submitted
+*concurrently* with the same key — they all return the one payment (the
+first `201`, the rest `200` showing whatever status it has reached, possibly
+`CREATED`/`PENDING`); an earlier version returned `409` to the losers.
+
+Application-level pre-check (`PaymentService.createPayment`) plus a real
+database `UNIQUE` constraint (`uq_payments_idempotency_key`) as the
+race-condition-safe backstop, with graceful `DataIntegrityViolationException`
+handling — proven by a real-H2 test (`PaymentRepositoryConstraintTest`),
+not just mocked.
+
+## FR-47: Payment/Booking Association — IMPLEMENTED
+
+Every payment shall reference exactly one booking. At most one payment for
+a given booking may be in a non-terminal state at any time — a booking
+must not have two simultaneously "live" payment attempts.
+
+`payments.booking_id` (real FK to `bookings.id`) plus
+`uq_payments_one_active_per_booking`, a partial `UNIQUE INDEX` on
+`(booking_id) WHERE status IN ('CREATED','PENDING','SUCCESS')` — the real,
+database-level enforcement. **Known test gap:** H2 2.2.224 (this project's
+test database) does not support partial/filtered unique indexes (confirmed
+by direct experimentation) — only the real PostgreSQL migration creates
+this specific constraint; H2-backed tests instead prove the equivalent
+application-level guard (`PaymentServiceTest`'s duplicate-payment tests).
+
+## FR-48: Payment Authorization — IMPLEMENTED
+
+Payment endpoints shall require the same JWT authentication already
+required by every other non-public Eventtick endpoint (FR-21/FR-22). A
+customer shall be able to create a payment only for a booking they own, and
+shall be able to view only their own payment records, mirroring the
+existing booking-ownership rule (BR-07). An administrator shall be able to
+view (read-only) any payment record.
+
+`payment-service` independently validates the same JWTs user-service
+issues (its own `SecurityConfig`/`JwtAuthenticationFilter`/`JwtService`,
+mirroring user-service's own defense-in-depth pattern) and derives the
+caller's identity from the validated token — never a client-supplied
+field, unlike booking-service's own pre-existing, documented gap (see
+`docs/architecture.md` §25.1).
+
+## FR-49: Amount and Currency Representation — IMPLEMENTED
+
+Payment amounts shall never be represented using a binary floating-point
+type. Currency shall be an explicit, stored property of a payment (the
+existing schema has no currency column anywhere, since every existing
+monetary field assumes a single implicit currency).
+
+`payments.amount NUMERIC(10,2)` (`BigDecimal` at the JPA level, matching
+`bookings.total_amount` exactly) and `payments.currency CHAR(3)`
+(configurable via `payment.default-currency`, defaulting to `INR` as a
+placeholder, not a stated business decision — see §25.2's open question).
+
+## FR-50: Provider Abstraction — IMPLEMENTED
+
+The system shall not couple the payment domain to one specific payment
+provider's API shape. An initial mock provider shall satisfy every
+requirement above without any real payment-provider account, credentials,
+or network dependency.
+
+`PaymentProvider` interface + `MockPaymentProvider` (no network call, no
+credentials, deterministic). No real provider (Stripe/Razorpay/etc.) was
+integrated.
+
+---
+
+# 27. Event-Driven Architecture Requirements — Phase 16
+
+**Status: Step 1 design complete; Step 2 implements Kafka infrastructure,
+the transactional outbox, and one real producer (`BookingCreated`); Step 3
+adds the first real consumer (`audit-service`/`BookingCreatedConsumer`);
+Step 4 adds a second producer (`PaymentSucceeded`, payment-service's own
+outbox) and a second consumer (`PaymentSucceededConsumer`, still inside
+audit-service).** Full reasoning is in `docs/architecture.md` §47 (design),
+§48 (Step 2), §49 (Step 3), and §50 (Step 4); this section states the
+requirements-level status only.
+
+## FR-51: Domain Event Publication — PARTIALLY IMPLEMENTED
+
+The system may publish domain events for state changes that other
+components can usefully react to asynchronously, without any producing
+service being coupled to who consumes its events. Each event shall be
+published by the service that owns the underlying state (BR-11) — never
+a separate event-owning service.
+
+**Implemented:** `BookingCreated`, published by booking-service via its
+transactional outbox (`docs/architecture.md` §48.7) on every
+`POST /api/bookings`. `PaymentSucceeded` (Phase 16 Step 4), published by
+payment-service via its own transactional outbox (`docs/architecture.md`
+§50.2–§50.4) on every payment that reaches `SUCCESS`.
+
+Catalogued and classified as strong candidates, remaining
+**NOT IMPLEMENTED** (architecture.md §47.2): `BookingCancelled`,
+`BookingConfirmed` (booking-service); `PaymentCreated`, `PaymentFailed`,
+`PaymentExpired` (payment-service — explicitly out of scope for Phase 16
+Step 4, see FR-56's own note); `ShowCreated`, `ShowCancelled`
+(catalog-service); `UserRegistered`, `UserRoleChanged` (user-service).
+Explicitly deferred, with reasoning, rather than assumed: `SeatHeld`/
+`SeatReleased` (holds have no recorded ownership yet — §16), `SeatBooked`
+(folded into `BookingConfirmed`'s payload), most catalog CRUD events, and
+`UserPlanChanged` (no consumer needs it — the rate limiter already reads
+plan from the JWT on every request).
+
+## FR-52: Payment/Booking Synchronous Boundary Preserved — IMPLEMENTED (unaffected)
+
+Introducing event publication shall not weaken FR-43/FR-45a's existing
+guarantees. A payment reaching `SUCCESS` shall still be durably committed
+before the internal booking-confirmation call, and that call shall remain
+the only mechanism that confirms a booking.
+
+Verified by omission for Phase 16 Step 2, and now proven directly for
+Phase 16 Step 4: `PaymentService`'s own entry points, `PaymentStatus`,
+`BookingSyncStatus`, `PaymentLifecycleScheduler`, and
+`BookingServiceClient` were not modified in either step.
+`PaymentSucceeded` (added in Step 4) is exactly the independent,
+best-effort broadcast this requirement anticipated — published by a
+separate collaborator (`PaymentSuccessRecorder`) strictly *after*
+`PaymentService.chargeAndResolve` has validated the `SUCCESS` transition,
+and strictly *before* (not instead of, not gating) the existing
+`bookingServiceClient.confirmBooking` call. Live-proven (docs/
+architecture.md §50.8, Step 12): with Kafka entirely unreachable, a
+payment still reaches `SUCCESS` and its booking still becomes `CONFIRMED`
+via the unchanged synchronous path; the outbox row simply stays `PENDING`
+until Kafka recovers. Never a second reconciliation path alongside
+`booking_sync_status` — `PaymentSuccessRecorder` has no dependency on
+`BookingServiceClient` or `BookingSyncStatus` at all.
+
+## FR-53: Idempotent Event Consumption — IMPLEMENTED
+
+Event delivery shall be treated as at-least-once, not exactly-once (no
+distributed-transaction infrastructure exists to claim otherwise). Every
+event carries a unique `eventId`, generated by `OutboxService` and reused
+as `booking_outbox_events.event_id`'s own primary key — a duplicate publish
+(e.g. after a crash between a Kafka ack and the row being marked
+`PUBLISHED`) reuses that same id, which is what a consumer dedupes on.
+
+Implemented on the consumer side (Phase 16 Step 3): `audit-service`'s
+`BookingCreatedConsumer`/`BookingEventAuditService` enforce this at the
+database level — `booking_event_audit.event_id` is the primary key, and a
+duplicate delivery is recognized by the insert failing that constraint,
+never by an application-level existence check alone (which would race
+under concurrent redelivery). Proven live: the same event delivered twice
+produces exactly one row. See `docs/architecture.md` §49.5.
+
+## FR-54: First Kafka Consumer — IMPLEMENTED (`BookingCreated` only)
+
+The system shall demonstrate the full event-driven chain — producer,
+transactional outbox, Kafka, consumer, consumer-side persistence,
+idempotent processing — with at least one real consumer, without making
+any existing synchronous flow depend on it.
+
+Implemented: `audit-service` (a new, dedicated service — port 8085, no
+Gateway route, no domain state beyond its own `booking_event_audit`
+projection) consumes `BookingCreated` from `eventtick.booking` under a
+fixed consumer group (`eventtick-booking-audit`) and persists an audit row
+per successfully processed event. Not implemented: consumption of any
+other event type; any consumer for `eventtick.payment`/`eventtick.catalog`/
+`eventtick.user` (none of those topics have a producer yet either). See
+`docs/architecture.md` §49.
+
+## FR-55: Payment Outbox — IMPLEMENTED
+
+payment-service shall own its own transactional outbox, structurally
+identical in design to booking-service's, but a physically separate table
+— each service's persistence boundary stays independent (BR-11).
+
+Implemented: `payment_outbox_events` (migration 0015), `PaymentOutboxEvent`/
+`PaymentOutboxEventRepository`/`PaymentOutboxService`/
+`PaymentOutboxPublisher` — payment-service's own copies of booking-
+service's equivalent classes, not a shared module (same §49.1 reasoning).
+The `SUCCESS` status write and the outbox row commit atomically, in one
+database transaction, inside `PaymentSuccessRecorder#recordSuccess` — not
+inside `PaymentService` itself, which cannot safely carry
+`@Transactional` here (see architecture.md §50.4 for why). Live-proven
+(Step 16 of the kickoff / §50.8): a forced `NOT NULL` violation on the
+payment write rolls back the outbox row in the same transaction; a
+payment reaching `SUCCESS` while Kafka is unreachable leaves the outbox
+row `PENDING`, never blocks `SUCCESS`, and is published automatically
+once Kafka recovers.
+
+## FR-56: Payment Audit Consumer (`PaymentSucceeded` only) — IMPLEMENTED
+
+audit-service (not a new service) shall gain a second Kafka consumer, for
+`PaymentSucceeded` on `eventtick.payment`, under its own fixed, restart-
+stable, distinct consumer group — proving the event-driven chain extends
+to a second producer/consumer pair without duplicating infrastructure or
+conflating the two topics' independent consumption progress.
+
+Implemented: `PaymentSucceededConsumer`/`PaymentEventAuditService` persist
+one row per successfully consumed event into `payment_event_audit`
+(migration 0016), idempotent at the database level exactly like
+`BookingCreatedConsumer` (FR-53), under consumer group
+`eventtick-payment-audit` (distinct from `eventtick-booking-audit`).
+Live-proven: a real payment SUCCESS traced end to end through the outbox,
+Kafka, and this consumer, with every field verified against the
+authoritative `payments` row via direct PostgreSQL queries; the same
+event redelivered produces exactly one row; the real audit-service
+process was killed and restarted mid-flow with no reprocessing and no
+interruption to normal consumption afterward. **Not implemented** (this
+step's explicit scope boundary): `PaymentFailed`, `PaymentExpired`,
+`BookingConfirmed`, `BookingCancelled`, any catalog/user event, and any
+DLQ — see architecture.md §50.9.
+
+## BR-11
+
+The service that owns a piece of domain state is the only service that
+may publish events about it. No central "event service" holds or
+originates domain state.
+
+Implemented for booking-service's own outbox
+(`database/migrations/0013_create_booking_outbox_events_table`) and now
+payment-service's own (`database/migrations/0015_create_payment_outbox_events_table`,
+Phase 16 Step 4): each table is prefixed by its owning service
+(`booking_`/`payment_`), specifically so they never collide under the one
+shared physical database this project currently uses — exactly the
+collision this rule anticipated, now actually avoided by a second real
+outbox table, not just a naming convention nothing yet tested.
+
+## NFR: Transactional Outbox — IMPLEMENTED (booking-service, payment-service)
+
+A service that publishes events shall do so via the Transactional Outbox
+Pattern (write the state change and an outbox row in one database
+transaction; a separate poller publishes and retries independently) — not
+a direct publish call from within the business transaction, which cannot
+make the database write and the Kafka publish atomic.
+
+Implemented for booking-service: `OutboxService.record(...)`, called from
+inside `BookingService.createBooking`'s own `@Transactional` method,
+writes the outbox row via a plain, already-transactional repository
+`save(...)` — no explicit transaction coordination code. `OutboxPublisher`
+is the separate poller. Proven, not just built: a failed `createBooking`
+call leaves neither the booking nor its outbox row; a successful one
+leaves both; an unreachable broker never affects booking creation. See
+`docs/architecture.md` §48.5–§48.6.
+
+Implemented for payment-service (Phase 16 Step 4, FR-55): the same
+pattern, via a dedicated `PaymentSuccessRecorder` bean rather than inside
+`PaymentService` directly (architecture.md §50.4 explains the proxy-based
+`@Transactional`/self-invocation reason this had to be a separate bean).
+Not yet implemented for catalog-service or user-service — neither has an
+outbox table of its own.
+
+---

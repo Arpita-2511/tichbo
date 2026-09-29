@@ -1,0 +1,28 @@
+# Eventtick — Grafana datasource provisioning (Phase 14, Step 3).
+#
+# Auto-registers the local Prometheus server (monitoring/prometheus.yml) as
+# a Grafana datasource on startup, so it doesn't need to be added by hand
+# through the UI. Grafana reads this file itself — nothing here is read by
+# Prometheus or by any Eventtick service.
+#
+# Points at the SAME Prometheus server monitoring/prometheus.yml's scrape
+# job feeds — Prometheus's default port 9090 (its query API and its own web
+# UI are the same port; see monitoring/README.md). Grafana queries this URL
+# with PromQL; it never talks to the four Eventtick services directly and is
+# never routed through the Eventtick Gateway.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # A fixed, explicit uid so the dashboard JSON in ../dashboards/ can
+    # reference this datasource by a stable literal id ("prometheus")
+    # instead of Grafana's auto-generated one, which would differ per
+    # install. Required for file-provisioned dashboards specifically — see
+    # monitoring/grafana/README.md's "Known issue, fixed in Step 4" note.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true
+    editable: true

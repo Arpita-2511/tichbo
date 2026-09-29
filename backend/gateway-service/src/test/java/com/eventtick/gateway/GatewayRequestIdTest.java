@@ -14,6 +14,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.EntityExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.api.StatefulRedisConnection;
+
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -39,23 +42,52 @@ class GatewayRequestIdTest {
     private static final String ALLOWED_ORIGIN = "http://localhost:5173";
 
     private static final StubUpstream STUB = new StubUpstream();
+    private static final TestRedis REDIS = TestRedis.start();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         StubUpstream.routeEverythingTo(registry, STUB.url());
+        registry.add("spring.data.redis.host", REDIS::host);
+        registry.add("spring.data.redis.port", REDIS::port);
     }
 
     @AfterAll
-    static void stopStub() {
+    static void stopInfrastructure() {
         STUB.stop();
+        REDIS.stop();
     }
 
     @Autowired
     private WebTestClient client;
 
+    /**
+     * Isolating this class's own {@link TestRedis} from other test classes
+     * (and from a developer's real Redis) is not, by itself, enough: this
+     * class's own 17 {@code @Test} methods collectively issue well over
+     * {@code AUTH.PUBLIC}'s burst-capacity-5 worth of unauthenticated
+     * {@code /api/auth/**} calls (all keyed by the same loopback IP — see
+     * {@code RateLimitKeyResolver}), so later tests in the class started
+     * failing with a genuine {@code 429} from their own class's earlier
+     * tests, not from any external state. Flushing the (disposable,
+     * class-scoped) embedded Redis before every test — the same "reset
+     * shared external state between tests" pattern {@code STUB.clear()}
+     * already establishes in this exact method — gives each test its own
+     * full bucket, without touching the production {@code AUTH.PUBLIC}
+     * policy or any other test class.
+     */
     @BeforeEach
     void clearRecorded() {
         STUB.clear();
+        flushTestRedis();
+    }
+
+    private static void flushTestRedis() {
+        RedisClient lettuce = RedisClient.create("redis://" + REDIS.host() + ":" + REDIS.port());
+        try (StatefulRedisConnection<String, String> connection = lettuce.connect()) {
+            connection.sync().flushall();
+        } finally {
+            lettuce.shutdown();
+        }
     }
 
     private static String bearer() {

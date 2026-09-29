@@ -1,0 +1,37 @@
+# Eventtick — local Prometheus scrape configuration (Phase 14, Step 2).
+#
+# Scrapes the five backend services' Actuator/Micrometer endpoints directly,
+# by port. There is no service-discovery infrastructure in this project (no
+# Consul/Eureka/Kubernetes), so targets are static, matching
+# docs/architecture.md §46's "standalone Prometheus, static scrape targets"
+# design. Prometheus talks to each service directly — it does NOT go through
+# the API Gateway (backend/gateway-service's spring.cloud.gateway.routes has
+# no /actuator/** entry, and /actuator/prometheus is not an Eventtick
+# business API — see docs/api-contracts.md).
+#
+# This file configures a Prometheus SERVER you run yourself (see
+# monitoring/README.md for how, including on Windows); it is not read by any
+# Eventtick service and is not deployed anywhere by this repository.
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: eventtick-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['localhost:8080']
+        labels:
+          service: gateway-service
+      - targets: ['localhost:8081']
+        labels:
+          service: user-service
+      - targets: ['localhost:8082']
+        labels:
+          service: catalog-service
+      - targets: ['localhost:8083']
+        labels:
+          service: booking-service
+      - targets: ['localhost:8084']
+        labels:
+          service: payment-service

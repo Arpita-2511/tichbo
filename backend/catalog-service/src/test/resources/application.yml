@@ -10,3 +10,21 @@ spring:
   jpa:
     hibernate:
       ddl-auto: none
+
+# Repeated here for the same reason as the datasource block above (Phase 14
+# Step 1): src/main/resources/application.yml is not merged with this file on
+# the test classpath, and tests asserting GET /actuator/prometheus behavior
+# need it actually exposed — health is Actuator's default-exposed endpoint
+# even with no config, but prometheus is not.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db

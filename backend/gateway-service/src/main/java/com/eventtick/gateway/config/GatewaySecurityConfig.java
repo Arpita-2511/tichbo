@@ -43,10 +43,11 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  * {@code ROLE_ADMIN} authority (Phase 13.3) — a {@code CUSTOMER} token gets
  * {@code 403} from {@link JsonAccessDeniedHandler}, not {@code 401}: it
  * authenticated successfully, it just isn't allowed here. Everywhere else,
- * there are still no role or ownership rules: any valid token, CUSTOMER or
- * ADMIN, passes. Who may do what on catalog/booking is a later decision
- * (and resource ownership stays with the owning service — see architecture
- * §6.3). The {@code role} claim is exposed as a {@code ROLE_*} authority for
+ * there are no ownership rules at the Gateway (resource ownership stays
+ * with the owning service — see architecture §6.3). The one other role rule:
+ * write methods (POST/PUT/PATCH/DELETE) on the four catalog management
+ * resources ({@code content}, {@code venues}, {@code seats}, {@code shows})
+ * require {@code ROLE_ADMIN}; reads there need only a valid token. The {@code role} claim is exposed as a {@code ROLE_*} authority for
  * exactly this kind of rule.
  *
  * <p>The {@code Authorization} header is forwarded to the backend
@@ -57,6 +58,20 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
 @Configuration
 @EnableWebFluxSecurity
 public class GatewaySecurityConfig {
+
+    /**
+     * The catalog resources a customer may read but not change (Phase 15
+     * Step 4 follow-up: previously any authenticated customer could create,
+     * update and delete them through {@code /api/catalog/**}). Listed
+     * explicitly rather than as {@code /api/catalog/**} so a future catalog
+     * path is not silently swept into an admin rule.
+     */
+    private static final String[] CATALOG_MANAGEMENT_PATHS = {
+            "/api/catalog/content", "/api/catalog/content/**",
+            "/api/catalog/venues", "/api/catalog/venues/**",
+            "/api/catalog/seats", "/api/catalog/seats/**",
+            "/api/catalog/shows", "/api/catalog/shows/**"
+    };
 
     /**
      * Built from the existing {@code spring.cloud.gateway.globalcors} config
@@ -110,10 +125,34 @@ public class GatewaySecurityConfig {
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
                 .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
                 .authorizeExchange(exchanges -> exchanges
+                        // Phase 14 Step 1: narrow allowlist, not /actuator/**
+                        // — only health/liveness/readiness/prometheus are
+                        // exposed at all (see management.endpoints.web.exposure
+                        // in application.yml), and only these exact paths skip
+                        // the JWT requirement below. Handled by this same
+                        // gateway-service process — there is deliberately no
+                        // spring.cloud.gateway.routes entry for /actuator/**,
+                        // so nothing here is ever forwarded to an upstream.
+                        .pathMatchers(HttpMethod.GET,
+                                "/actuator/health", "/actuator/health/liveness",
+                                "/actuator/health/readiness", "/actuator/prometheus")
+                        .permitAll()
                         // Phase 13.3: checked before the blanket rule below, so an
                         // authenticated CUSTOMER gets 403 (authenticated, not
                         // authorized) rather than the generic authenticated() pass.
                         .pathMatchers("/api/admin/**").hasAuthority("ROLE_ADMIN")
+                        // Booking confirmation is payment-service's internal job
+                        // (POST /internal/bookings/{id}/confirm, which has no
+                        // Gateway route). The old public endpoint is denied for
+                        // every role, admin included, and never forwarded.
+                        .pathMatchers("/api/bookings/*/confirm").denyAll()
+                        // Catalog management is admin-only. Reads under
+                        // /api/catalog/** stay open to any authenticated user;
+                        // only writes on these four resources need ROLE_ADMIN.
+                        .pathMatchers(HttpMethod.POST, CATALOG_MANAGEMENT_PATHS).hasAuthority("ROLE_ADMIN")
+                        .pathMatchers(HttpMethod.PUT, CATALOG_MANAGEMENT_PATHS).hasAuthority("ROLE_ADMIN")
+                        .pathMatchers(HttpMethod.PATCH, CATALOG_MANAGEMENT_PATHS).hasAuthority("ROLE_ADMIN")
+                        .pathMatchers(HttpMethod.DELETE, CATALOG_MANAGEMENT_PATHS).hasAuthority("ROLE_ADMIN")
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .authenticationEntryPoint(unauthorized)

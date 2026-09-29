@@ -9,6 +9,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.ColumnDefault;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -57,6 +58,8 @@ public class BookingSeat {
     @Column(name = "price_at_booking", nullable = false, precision = 10, scale = 2)
     private BigDecimal priceAtBooking;
 
+    // Schema-generation hint only — see ShowSeat.createdAt's own comment.
+    @ColumnDefault("CURRENT_TIMESTAMP")
     @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
     private Instant createdAt;
 

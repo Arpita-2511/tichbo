@@ -5,13 +5,18 @@ import com.eventtick.booking.entity.BookingSeat;
 import com.eventtick.booking.entity.BookingStatus;
 import com.eventtick.booking.entity.ShowSeat;
 import com.eventtick.booking.entity.ShowSeatStatus;
+import com.eventtick.booking.exception.BookingAccessDeniedException;
 import com.eventtick.booking.exception.BookingNotFoundException;
 import com.eventtick.booking.exception.InvalidBookingStateException;
 import com.eventtick.booking.exception.InvalidSeatStateException;
 import com.eventtick.booking.exception.SeatShowMismatchException;
+import com.eventtick.booking.event.BookingCreatedPayload;
+import com.eventtick.booking.event.EventTopics;
+import com.eventtick.booking.outbox.OutboxService;
 import com.eventtick.booking.repository.BookingRepository;
 import com.eventtick.booking.repository.BookingSeatRepository;
 import com.eventtick.booking.repository.ShowSeatRepository;
+import com.eventtick.booking.security.CallerIdentity;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -60,12 +65,17 @@ import java.util.stream.Collectors;
  *   calls {@link #releaseHold} or {@link #cancelBooking}. Until Redis (or
  *   a scheduled sweep) exists, an abandoned checkout permanently locks a
  *   seat. Do not mistake the current behavior for "temporary."</li>
- *   <li><b>Authorization.</b> {@link #cancelBooking} accepts a
- *   {@code requestingUserId} but does not check it against
- *   {@code booking.getUserId()} — there is no authentication layer yet to
- *   trust that value. The parameter exists so the eventual check has
- *   somewhere to go.</li>
+ *   <li><b>Seat-hold ownership</b> (above) is still not enforced: hold,
+ *   release and the seat map are open to any authenticated caller.</li>
  * </ul>
+ *
+ * <h2>Booking ownership (BR-07)</h2>
+ * Reading, listing and cancelling a booking on behalf of a signed-in user
+ * go through {@link #getBookingForCaller}, {@link #getBookingsForCaller} and
+ * {@link #cancelBookingForCaller}, which take the caller's identity from the
+ * validated JWT. The plain {@link #getBooking}/{@link #cancelBooking}/
+ * {@link #confirmBooking} carry no ownership check and are reached only by
+ * payment-service through {@code /internal/**}.
  */
 @Service
 public class BookingService {
@@ -73,13 +83,16 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final BookingSeatRepository bookingSeatRepository;
     private final ShowSeatRepository showSeatRepository;
+    private final OutboxService outboxService;
 
     public BookingService(BookingRepository bookingRepository,
                            BookingSeatRepository bookingSeatRepository,
-                           ShowSeatRepository showSeatRepository) {
+                           ShowSeatRepository showSeatRepository,
+                           OutboxService outboxService) {
         this.bookingRepository = bookingRepository;
         this.bookingSeatRepository = bookingSeatRepository;
         this.showSeatRepository = showSeatRepository;
+        this.outboxService = outboxService;
     }
 
     /**
@@ -127,15 +140,34 @@ public class BookingService {
      * not itself claim {@code AVAILABLE} seats. {@code totalAmount} is
      * computed here as the sum of each seat's current price.
      *
+     * <p>Phase 16 Step 2: also writes a {@code BookingCreated} outbox row
+     * (see {@link OutboxService}) in this same transaction, so the booking
+     * and the event describing it can never disagree — either both commit
+     * or neither does. Publishing to Kafka itself happens later,
+     * independently, and never affects this method's own success or
+     * failure (docs/architecture.md §48).
+     *
+     * @param correlationId ties the resulting event back to the request
+     *                       that created this booking (its own
+     *                       X-Request-ID) — see {@link OutboxService#record}
      * @throws SeatShowMismatchException if a showSeatId doesn't belong to {@code showId}
      * @throws InvalidSeatStateException if any seat isn't currently HELD
      */
     @Transactional
-    public Booking createBooking(UUID userId, UUID showId, List<UUID> showSeatIds) {
+    public Booking createBooking(UUID userId, UUID showId, List<UUID> showSeatIds, String correlationId) {
         requireNonEmpty(showSeatIds);
         List<ShowSeat> seats = lockShowSeats(showSeatIds);
         validateSeatsBelongToShow(seats, showId);
         validateSeatsInStatus(seats, ShowSeatStatus.HELD);
+
+        // A seat stays HELD after a booking is created, so HELD alone doesn't
+        // stop a second booking on it. The row locks taken above serialize
+        // concurrent callers: the later one sees the earlier booking committed.
+        List<UUID> alreadyBooked = bookingSeatRepository.findShowSeatIdsWithBookingInStatus(
+                showSeatIds, List.of(BookingStatus.PENDING, BookingStatus.CONFIRMED));
+        if (!alreadyBooked.isEmpty()) {
+            throw new InvalidSeatStateException(alreadyBooked.get(0), "already has an active booking");
+        }
 
         Booking booking = new Booking();
         booking.setUserId(userId);
@@ -159,23 +191,38 @@ public class BookingService {
         }
         bookingSeatRepository.saveAll(lineItems);
 
+        BookingCreatedPayload payload = new BookingCreatedPayload(
+                savedBooking.getId(), userId, showId, showSeatIds, total);
+        outboxService.record("BookingCreated", 1, "Booking", savedBooking.getId(),
+                EventTopics.BOOKING, payload, correlationId, null);
+
         return savedBooking;
     }
 
     /**
      * Confirms a {@code PENDING} booking: its seats transition
      * {@code HELD -> BOOKED} and the booking becomes {@code CONFIRMED}.
-     * There is no payment step yet — this is currently the only trigger
-     * for confirmation, called directly rather than from a payment-success
-     * callback.
+     * Called from payment-service after a successful payment
+     * ({@code BookingServiceClient.confirmBooking} — Phase 15).
+     *
+     * <p><b>Idempotent on an already-{@code CONFIRMED} booking</b> (Phase 15
+     * Step 3): returns the booking as-is rather than throwing, specifically
+     * so payment-service's reconciliation sweep can safely retry this call
+     * after a network failure without knowing whether the first attempt
+     * actually landed — see {@code docs/architecture.md} §25.3. This is the
+     * only behavior change; every other status still throws exactly as
+     * before.
      *
      * @throws BookingNotFoundException if bookingId doesn't exist
-     * @throws InvalidBookingStateException if the booking isn't PENDING
+     * @throws InvalidBookingStateException if the booking is neither PENDING nor already CONFIRMED
      * @throws InvalidSeatStateException if any of its seats aren't HELD
      */
     @Transactional
     public Booking confirmBooking(UUID bookingId) {
         Booking booking = requireBooking(bookingId);
+        if (booking.getStatus() == BookingStatus.CONFIRMED) {
+            return booking;
+        }
         if (booking.getStatus() != BookingStatus.PENDING) {
             throw new InvalidBookingStateException(bookingId, booking.getStatus(), "confirmed");
         }
@@ -191,16 +238,51 @@ public class BookingService {
     /**
      * Cancels a {@code PENDING} or {@code CONFIRMED} booking; its seats
      * are released back to {@code AVAILABLE} regardless of whether they
-     * were {@code HELD} or {@code BOOKED}.
+     * were {@code HELD} or {@code BOOKED}. Also called from payment-service
+     * after a failed or expired payment
+     * ({@code BookingServiceClient.releaseBooking} —
+     * Phase 15).
      *
-     * @param requestingUserId accepted but not yet checked against the
-     *                         booking's owner — see class Javadoc ("Authorization").
+     * <p><b>Idempotent on an already-{@code CANCELLED} booking</b> (Phase 15
+     * Step 3), for the same reconciliation-retry reason as
+     * {@link #confirmBooking} above.
+     *
+     * <p><b>No ownership check</b> — this is the system-level cancel, used by
+     * payment-service through {@code /internal/**}. A customer-initiated
+     * cancel goes through {@link #cancelBookingForCaller}.
+     *
      * @throws BookingNotFoundException if bookingId doesn't exist
-     * @throws InvalidBookingStateException if the booking is already CANCELLED or FAILED
+     * @throws InvalidBookingStateException if the booking is FAILED, or already CANCELLED only via a different path than this method's own idempotent return (see above)
      */
     @Transactional
-    public Booking cancelBooking(UUID bookingId, UUID requestingUserId) {
+    public Booking cancelBooking(UUID bookingId) {
+        return cancelExisting(requireBooking(bookingId));
+    }
+
+    /**
+     * Customer-initiated cancel (BR-07): only the booking's owner may cancel
+     * it. Administrators are not exempt — FR-39 defines admin booking
+     * management as read-only. The ownership check runs after the existence
+     * check (404 for a nonexistent booking, 403 for someone else's) and
+     * before any state or seat change.
+     *
+     * @throws BookingNotFoundException      if bookingId doesn't exist
+     * @throws BookingAccessDeniedException  if the caller does not own the booking
+     */
+    @Transactional
+    public Booking cancelBookingForCaller(UUID bookingId, CallerIdentity caller) {
         Booking booking = requireBooking(bookingId);
+        if (!booking.getUserId().equals(caller.userId())) {
+            throw new BookingAccessDeniedException(bookingId);
+        }
+        return cancelExisting(booking);
+    }
+
+    private Booking cancelExisting(Booking booking) {
+        UUID bookingId = booking.getId();
+        if (booking.getStatus() == BookingStatus.CANCELLED) {
+            return booking;
+        }
         if (booking.getStatus() != BookingStatus.PENDING && booking.getStatus() != BookingStatus.CONFIRMED) {
             throw new InvalidBookingStateException(bookingId, booking.getStatus(), "cancelled");
         }
@@ -214,9 +296,8 @@ public class BookingService {
 
     /**
      * A user's bookings, most-recent-first ordering not yet applied. Plain
-     * read; safe to call at any time. Does not itself enforce that the
-     * caller is allowed to see {@code userId}'s bookings (BR-07) — that
-     * depends on the future auth layer.
+     * read with no authorization — internal use. Callers acting for a
+     * signed-in user go through {@link #getBookingsForCaller}.
      */
     @Transactional(readOnly = true)
     public List<Booking> getBookingsForUser(UUID userId) {
@@ -224,13 +305,53 @@ public class BookingService {
     }
 
     /**
-     * A single booking by id. Plain read; safe to call at any time.
+     * Bookings visible to {@code caller} (BR-07). A customer always gets
+     * their own bookings; naming a different user is refused rather than
+     * silently ignored. An administrator gets the named user's bookings, or
+     * every booking when no user is named. Ownership comes from the validated
+     * JWT, never from a request field.
+     *
+     * @param requestedUserId optional {@code userId} query parameter
+     * @throws BookingAccessDeniedException if a customer asks for someone else's bookings
+     */
+    @Transactional(readOnly = true)
+    public List<Booking> getBookingsForCaller(CallerIdentity caller, UUID requestedUserId) {
+        if (caller.admin()) {
+            return requestedUserId != null
+                    ? bookingRepository.findByUserId(requestedUserId)
+                    : bookingRepository.findAll();
+        }
+        if (requestedUserId != null && !requestedUserId.equals(caller.userId())) {
+            throw new BookingAccessDeniedException("You can only list your own bookings.");
+        }
+        return bookingRepository.findByUserId(caller.userId());
+    }
+
+    /**
+     * A single booking by id. Plain read with no authorization — internal
+     * use (payment-service). Callers acting for a signed-in user go through
+     * {@link #getBookingForCaller}.
      *
      * @throws BookingNotFoundException if bookingId doesn't exist
      */
     @Transactional(readOnly = true)
     public Booking getBooking(UUID bookingId) {
         return requireBooking(bookingId);
+    }
+
+    /**
+     * A booking for a signed-in caller (BR-07): its owner or an administrator.
+     *
+     * @throws BookingNotFoundException     if bookingId doesn't exist
+     * @throws BookingAccessDeniedException if the caller is neither the owner nor an admin
+     */
+    @Transactional(readOnly = true)
+    public Booking getBookingForCaller(UUID bookingId, CallerIdentity caller) {
+        Booking booking = requireBooking(bookingId);
+        if (!caller.admin() && !booking.getUserId().equals(caller.userId())) {
+            throw new BookingAccessDeniedException(bookingId);
+        }
+        return booking;
     }
 
     /**

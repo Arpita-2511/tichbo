@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
@@ -70,6 +71,15 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()
+                        // Phase 14 Step 1: narrow allowlist, not /actuator/**
+                        // — only health/liveness/readiness/prometheus are
+                        // exposed at all (see management.endpoints.web.exposure
+                        // in application.yml), and only these exact paths skip
+                        // the JWT requirement below.
+                        .requestMatchers(HttpMethod.GET,
+                                "/actuator/health", "/actuator/health/liveness",
+                                "/actuator/health/readiness", "/actuator/prometheus")
+                        .permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(this::handleUnauthenticated)

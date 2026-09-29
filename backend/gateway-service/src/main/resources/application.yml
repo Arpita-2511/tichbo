@@ -105,6 +105,19 @@ spring:
           predicates:
             - Path=/api/bookings/**
 
+        # Phase 15 Step 2: payment-service — same top-level wildcard style
+        # as the three routes above (not the narrow-per-endpoint discipline
+        # used only under /api/admin/**), since this is a new top-level
+        # business resource, not an admin sub-resource. No new Gateway
+        # security rule was added: GatewaySecurityConfig's existing
+        # anyExchange().authenticated() catch-all already protects this
+        # route automatically, the same way it did when catalog-service's
+        # and booking-service's own routes were first added.
+        - id: payment-service
+          uri: http://localhost:8084
+          predicates:
+            - Path=/api/payments/**
+
         # Phase 13.5.3: the first admin route. Deliberately an explicit,
         # narrow predicate for exactly this endpoint — not a generic
         # /api/admin/** catch-all — so each future admin endpoint is routed
@@ -348,6 +361,23 @@ eventtick:
     fallback:
       replenish-rate: 2
       burst-capacity: 5
+
+# Phase 14 Step 1: service-local health/metrics endpoints. Deliberately not
+# management.endpoints.web.exposure.include: "*" — only health and prometheus
+# are exposed, so env/beans/configprops/mappings/loggers/heapdump etc. stay
+# unavailable. Handled entirely by gateway-service itself — see
+# GatewaySecurityConfig for the narrow permitAll and note there is
+# deliberately no /actuator/** entry under spring.cloud.gateway.routes above,
+# so these are never proxied to an upstream service.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
 
 server:
   port: 8080

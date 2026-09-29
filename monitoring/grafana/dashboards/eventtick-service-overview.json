@@ -1,0 +1,111 @@
+{
+  "title": "Eventtick Service Overview",
+  "uid": "eventtick-service-overview",
+  "description": "Phase 14 Step 3 — minimal overview built only from metrics the existing Spring Boot Actuator/Micrometer setup actually exposes (see docs/architecture.md §46.4). Queries the local Prometheus datasource provisioned alongside this dashboard.",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "30s",
+  "tags": ["eventtick", "phase-14"],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "label": "Service",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(up, service)", "refId": "service-variable" },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP request rate",
+      "description": "Requests/second per service, from http_server_requests_seconds_count. For gateway-service, most proxied routes report uri=\"UNKNOWN\" (Spring Cloud Gateway's WebFlux metrics only resolve a real uri for the gateway's own local endpoints, e.g. /actuator/health) — this panel sums by service, not by uri, so that limitation doesn't affect it.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{service=~\"$service\"}[$__rate_interval])) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "title": "HTTP request latency (average)",
+      "description": "Average request duration per service: rate(sum)/rate(count) over http_server_requests_seconds. This is a MEAN, not a percentile — the app does not expose _bucket series (management.metrics.distribution.percentiles-histogram was not enabled in Phase 14), so histogram_quantile() cannot be used here. See docs/architecture.md §46.4 for this documented limitation.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_sum{service=~\"$service\"}[$__rate_interval])) by (service) / sum(rate(http_server_requests_seconds_count{service=~\"$service\"}[$__rate_interval])) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "title": "HTTP 5xx error rate",
+      "description": "Server-error responses/second per service (status=~\"5..\"), from the same http_server_requests_seconds_count series as the request-rate panel.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{service=~\"$service\", status=~\"5..\"}[$__rate_interval])) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "title": "JVM heap memory used",
+      "description": "Sum of jvm_memory_used_bytes{area=\"heap\"} per service (all heap pools combined — G1 Eden/Old/Survivor on this project's JVM).",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(jvm_memory_used_bytes{service=~\"$service\", area=\"heap\"}) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "title": "Process CPU usage",
+      "description": "process_cpu_usage per service — the JVM process's own recent CPU usage as a 0-1 fraction (Micrometer's standard process metric, not a custom one).",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "process_cpu_usage{service=~\"$service\"}",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    }
+  ]
+}

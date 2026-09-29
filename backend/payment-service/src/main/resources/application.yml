@@ -1,0 +1,126 @@
+spring:
+  application:
+    name: payment-service
+  datasource:
+    # Points at the existing eventtick_db for now. docs/architecture.md
+    # §17 describes database-per-service as a future target, not required
+    # for the current local setup. Never commit real credentials — these
+    # fall back to environment variables with no hardcoded password.
+    url: jdbc:postgresql://localhost:5432/eventtick_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:}
+  jpa:
+    # The schema is fully owned by database/migrations/ (see
+    # database/README.md). Hibernate must never auto-generate or alter it.
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  # Phase 16 Step 4: the broker for this service's own transactional
+  # outbox publisher (PaymentOutboxPublisher) — same env var name, same
+  # unset-environment fallback, same reasoning as booking-service's own
+  # (see that service's application.yml comment). A payment reaching
+  # SUCCESS does not depend on this being reachable — see
+  # PaymentSuccessRecorder/PaymentOutboxService.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Plain strings, not Spring Kafka's class-based JsonSerializer —
+      # PaymentOutboxService already hands the publisher a fully-serialized
+      # JSON envelope, same "inspectable" reasoning as booking-service's own.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Full broker acknowledgement before PaymentOutboxPublisher may mark
+      # a row PUBLISHED — require a real ack, not merely that a send was
+      # initiated.
+      acks: all
+      properties:
+        # Bounds how long a publish attempt can block waiting on broker
+        # metadata before the publisher's own code sees a failure and
+        # moves on.
+        max.block.ms: 5000
+
+# Phase 16 Step 4: this service's own copy of the outbox/event foundation
+# — not a shared library, matching this project's established precedent
+# (each service owns its own small infrastructure classes rather than a
+# shared Maven module).
+eventtick:
+  events:
+    producer: payment-service
+    publish-sweep-interval-ms: ${EVENTS_PUBLISH_SWEEP_INTERVAL_MS:5000}
+    publish-batch-size: ${EVENTS_PUBLISH_BATCH_SIZE:50}
+
+server:
+  port: 8084
+
+# Same shared secret/issuer/audience env vars as gateway-service and
+# user-service — this service independently validates the same JWTs
+# user-service issues (defense in depth, matching user-service's own
+# /api/users/me), so the three must agree. The fallback values after ':'
+# are LOCAL-DEV-ONLY placeholders identical to the other two services' own
+# fallbacks; never rely on them outside a laptop.
+jwt:
+  secret: ${JWT_SECRET:dev-only-insecure-secret-change-before-any-real-deployment-0123456789}
+  issuer: ${JWT_ISSUER:eventtick-user-service}
+  audience: ${JWT_AUDIENCE:eventtick-clients}
+
+# Phase 15 Step 2: where to reach booking-service for authoritative booking
+# data (owner, status, total_amount) — see BookingServiceClient. Direct
+# service-to-service call, not through the Gateway: booking-service has no
+# security of its own (fully trusts whoever reaches it, same as
+# catalog-service), so no additional credential is needed for this call,
+# and routing it back out through the customer-facing Gateway would be
+# pointless indirection for internal traffic.
+booking-service:
+  base-url: ${BOOKING_SERVICE_BASE_URL:http://localhost:8083}
+
+# Phase 15 Step 2: payment domain defaults. currency has no existing
+# project-wide convention (no other table has a currency column at all —
+# see docs/architecture.md §25.1) — kept explicit and configurable rather
+# than silently inventing a business decision; INR is a placeholder default
+# only, not a stated business requirement.
+#
+# Phase 15 Step 3 additions:
+#   expiration-minutes: how long a payment may stay PENDING before the
+#     expiration sweep moves it to EXPIRED. 15 minutes is a reasonable
+#     local-development default (typical real checkout windows are in this
+#     range) — not tuned for production, and not an arbitrary/hardcoded
+#     value: it's this one named, documented, overridable property.
+#   expiration-sweep-interval-ms / reconciliation-sweep-interval-ms: how
+#     often PaymentLifecycleScheduler's two @Scheduled sweeps run. Kept
+#     deliberately more frequent than expiration-minutes itself so a
+#     payment doesn't sit expired-but-undetected for long relative to its
+#     own lifetime.
+payment:
+  default-currency: ${PAYMENT_DEFAULT_CURRENCY:INR}
+  default-provider: ${PAYMENT_DEFAULT_PROVIDER:MOCK}
+  expiration-minutes: ${PAYMENT_EXPIRATION_MINUTES:15}
+  expiration-sweep-interval-ms: ${PAYMENT_EXPIRATION_SWEEP_INTERVAL_MS:60000}
+  reconciliation-sweep-interval-ms: ${PAYMENT_RECONCILIATION_SWEEP_INTERVAL_MS:30000}
+
+# Phase 14 Step 1 parity: service-local health/metrics endpoints.
+# Deliberately not management.endpoints.web.exposure.include: "*" — only
+# health and prometheus are exposed. Never routed through the Gateway.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # "kafka" is deliberately NOT added to this readiness group, same
+      # reasoning as booking-service's own: Kafka is a best-effort,
+      # asynchronously-processed side channel behind this service's outbox
+      # (Phase 16 Step 4) — payment creation, and specifically reaching
+      # SUCCESS, must still succeed with no broker reachable.
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    # Without this, Spring Boot's auto-added KafkaHealthIndicator would
+    # flip the plain aggregate /actuator/health to DOWN purely because
+    # Kafka is unreachable — exactly backwards for how this service
+    # actually depends on it. Same setting booking-service already makes.
+    kafka:
+      enabled: false

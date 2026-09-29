@@ -3,6 +3,7 @@ package com.eventtick.booking.service;
 import com.eventtick.booking.entity.Booking;
 import com.eventtick.booking.repository.BookingRepository;
 import com.eventtick.booking.repository.BookingSeatRepository;
+import com.eventtick.booking.outbox.OutboxService;
 import com.eventtick.booking.repository.ShowSeatRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Page;
@@ -36,7 +37,7 @@ class BookingServiceListAllTest {
     private final BookingSeatRepository bookingSeatRepository = mock(BookingSeatRepository.class);
     private final ShowSeatRepository showSeatRepository = mock(ShowSeatRepository.class);
     private final BookingService bookingService =
-            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository);
+            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository, mock(OutboxService.class));
 
     @Test
     void listAll_delegatesDirectlyToBookingRepositoryFindAll_withTheGivenPageable() {

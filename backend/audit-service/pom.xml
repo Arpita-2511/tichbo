@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.4</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.eventtick</groupId>
+    <artifactId>audit-service</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>audit-service</name>
+    <description>
+        Eventtick Audit Service — Phase 16 Step 3's first Kafka consumer.
+        Owns exactly one table, `booking_event_audit`: a persistent,
+        idempotent projection of `BookingCreated` events consumed from
+        `eventtick.booking`. Owns no booking/payment/catalog/user domain
+        state — see docs/architecture.md §49 for why this is a separate,
+        dedicated service rather than added to booking-service or any
+        other existing one.
+    </description>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <!-- A web server only for Actuator's HTTP endpoints (health,
+             prometheus) — this service has no REST API of its own; see
+             docs/architecture.md §49 for why no Spring Security dependency
+             was added either (the same "nothing else to protect" reasoning
+             catalog-service's own pom.xml already documents). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- The one real consumer this step adds — see
+             backend/booking-service/pom.xml's own comment for why no
+             explicit <version> (Spring Boot's own dependency management). -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- Phase 14 Step 1 parity: health (liveness/readiness) and
+             Prometheus metrics endpoints. Service-local only — never
+             routed through the Gateway. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real, in-process Kafka broker for the consumer's own tests
+             (@EmbeddedKafka) — the same "real infrastructure over a mock"
+             choice already made for Redis and for booking-service's own
+             OutboxPublisher tests, applied here to the consumer side. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- In-memory DB for tests only, so `mvn test` doesn't require a
+             live PostgreSQL connection. See src/test/resources/application.yml. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

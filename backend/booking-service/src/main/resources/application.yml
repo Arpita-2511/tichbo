@@ -15,6 +15,88 @@ spring:
     hibernate:
       ddl-auto: none
     open-in-view: false
+  # Phase 16 Step 2: the broker for the transactional outbox publisher
+  # (docs/architecture.md §48). No localhost-only assumption baked into
+  # this default's *meaning* — KAFKA_BOOTSTRAP_SERVERS is how every real
+  # environment overrides it; localhost:9092 is only what an unset
+  # environment variable falls back to, the same pattern every other
+  # env-configurable value in this file already uses (DB_USERNAME,
+  # JWT_SECRET, ...). Booking creation does not depend on this being
+  # reachable — see OutboxPublisher.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Plain strings, not Spring Kafka's class-based JsonSerializer: the
+      # outbox already hands the publisher a fully-serialized JSON envelope
+      # (OutboxService did the Jackson serialization at write time), and a
+      # human or `kafka-console-consumer` can read a plain string with no
+      # Java classpath knowledge — see docs/architecture.md §47.5's own
+      # "inspectable" requirement.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Full broker acknowledgement before OutboxPublisher may mark a row
+      # PUBLISHED — see §47.6/§48's "require real ack, not merely that a
+      # send was initiated."
+      acks: all
+      properties:
+        # Bounds how long a publish attempt can block waiting on broker
+        # metadata before the publisher's own code sees a failure and moves
+        # on — without this, an unreachable broker could stall a sweep
+        # instead of just failing this batch's sends.
+        max.block.ms: 5000
+
+# Phase 16 Step 2: this service's own copy of the outbox/event foundation
+# (docs/architecture.md §48) — not a shared library, matching this
+# project's established precedent of each service owning its own small
+# infrastructure classes rather than a shared Maven module (see
+# SecurityConfig/JwtService's own Javadoc for the same reasoning applied to
+# JWT validation).
+eventtick:
+  events:
+    producer: booking-service
+    publish-sweep-interval-ms: ${EVENTS_PUBLISH_SWEEP_INTERVAL_MS:5000}
+    publish-batch-size: ${EVENTS_PUBLISH_BATCH_SIZE:50}
+
+# Booking ownership (BR-07): this service validates the same JWT user-service
+# issues, exactly as payment-service does — same env vars, same local-dev-only
+# fallbacks (never rely on them outside a laptop).
+jwt:
+  secret: ${JWT_SECRET:dev-only-insecure-secret-change-before-any-real-deployment-0123456789}
+  issuer: ${JWT_ISSUER:eventtick-user-service}
+  audience: ${JWT_AUDIENCE:eventtick-clients}
 
 server:
   port: 8083
+
+# Phase 14 Step 1: service-local health/metrics endpoints. Deliberately not
+# management.endpoints.web.exposure.include: "*" — only health and prometheus
+# are exposed, so env/beans/configprops/mappings/loggers/heapdump etc. stay
+# unavailable. Never routed through the Gateway.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # The "readiness" group only contains readinessState by default (an
+      # app-availability marker, unrelated to any dependency) — "db" is
+      # added explicitly so PostgreSQL connectivity actually participates in
+      # readiness, via Actuator's auto-configured DataSourceHealthIndicator
+      # (no custom HealthIndicator code). "kafka" is deliberately NOT added:
+      # Kafka is a best-effort, asynchronously-processed side channel behind
+      # the outbox (§48), never a synchronous dependency of any request —
+      # booking creation must still succeed with no broker reachable.
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    # Same reasoning as the readiness group above, applied to the plain
+    # aggregate /actuator/health too: without this, Spring Boot's
+    # auto-added KafkaHealthIndicator would flip it to DOWN purely because
+    # Kafka is unreachable, which is exactly backwards for how this service
+    # actually depends on it.
+    kafka:
+      enabled: false

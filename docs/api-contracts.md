@@ -733,6 +733,245 @@ No new request/response DTO beyond `RateLimitStatsResponse`/`RateLimitPolicyDto`
 
 ---
 
+# Booking access rules and catalog write authorization (Phase 15 Step 4 follow-up)
+
+Not new endpoints — authorization on existing ones. Full reasoning in
+`docs/architecture.md` §25.5.
+
+**Booking ownership (BR-07).** Booking Service now validates the caller's
+JWT and takes identity **only** from it — never from a body or query
+field. Error bodies use Booking Service's existing shape
+(`status`, `error`, `message`, `timestamp`).
+
+| Endpoint | Owner (CUSTOMER) | Other CUSTOMER | ADMIN | No / invalid token |
+|---|---|---|---|---|
+| `GET /api/bookings/{bookingId}` | `200` | `403 FORBIDDEN` | `200` | `401 UNAUTHENTICATED` |
+| `GET /api/bookings` | `200`, own bookings only | `200` own bookings; `?userId=<someone else>` → `403` | `200`, all bookings (or the `?userId=` user's) | `401` |
+| `POST /api/bookings/{bookingId}/cancel` | `200` (existing state rules apply) | `403` | `403` (admin booking management is read-only, FR-39) | `401` |
+| `POST /api/bookings` | `201`; body `userId` must equal the caller | `403` if `userId` is not the caller | same as customer | `401` |
+| ~~`POST /api/bookings/{bookingId}/confirm`~~ **removed / obsolete** | `403` | `403` | `403` (not a capability, FR-39) | `401` |
+
+**Booking confirmation is not a public operation.** The public confirm
+endpoint let any signed-in customer confirm an unpaid booking (a payment
+bypass) and no longer exists; there is no client-facing way to confirm a
+booking. Requests to `/api/bookings/{id}/confirm` (any method) are denied by
+both the Gateway and booking-service: `403 FORBIDDEN` for any valid token —
+owner, other customer or admin — and `401 UNAUTHENTICATED` for a missing,
+malformed, expired or tampered token; nothing is forwarded to the booking
+logic. A booking becomes `CONFIRMED` only when payment-service, after its
+payment reaches `SUCCESS`, calls the internal
+`POST /internal/bookings/{id}/confirm`. Clients observe the result by reading
+the booking (`GET /api/bookings/{id}`) or payment.
+
+`404 BOOKING_NOT_FOUND` is returned for a booking that does not exist,
+regardless of caller (existence is checked before ownership). `?userId=` on
+`GET /api/bookings` is now optional. The cancel request body
+(`{"requestingUserId": ...}`) is no longer read; sending it is harmless.
+Response shapes are unchanged. `/api/admin/**` on Booking Service also
+requires `ROLE_ADMIN` (in addition to the Gateway's rule).
+
+**Internal surface.** `GET /internal/bookings/{id}`,
+`POST /internal/bookings/{id}/confirm` and `POST /internal/bookings/{id}/cancel`
+are payment-service's system-level calls: no token, no ownership check.
+**Exposure boundary:** the Gateway has no route for `/internal/**` (a request
+through it is `404`, or `401` with no token), so clients cannot reach them;
+they are exactly as private as booking-service's own network port (a direct
+call to port 8083 is accepted without a token), which is why that port must
+not be exposed publicly.
+
+**Catalog writes.** `POST`/`PUT`/`PATCH`/`DELETE` on
+`/api/catalog/content`, `/venues`, `/seats` and `/shows` (and their
+sub-paths) require `role=ADMIN`, enforced at the Gateway: a CUSTOMER gets
+`403 FORBIDDEN` (never forwarded), unauthenticated requests still get `401`.
+`GET`s on those paths remain open to any authenticated user. The
+`/api/admin/**` routes are unchanged.
+
+---
+
+# Payment API (Phase 15 Step 2 — Implemented)
+
+A real `payment-service` (port `8084`) implements exactly the three
+endpoints below — see `docs/architecture.md` §25.1 (design) and §25.2
+(implementation) for the full reasoning (service boundary, state model,
+consistency strategy, idempotency, security, data model) and
+`docs/requirements.md` §26 (FR-41–FR-50, per-requirement implementation
+status) for the requirements this satisfies. Reached through the Gateway at
+`/api/payments/**`, a wildcard route matching the existing
+`/api/bookings/**`/`/api/catalog/**` style (not the narrow per-endpoint
+style used only under `/api/admin/**`) — see "Gateway routing" below.
+**Deferred** (not in this step): real provider integration, provider
+webhooks, a customer-facing action that cancels a payment
+(`CANCELLED` is a valid status but nothing triggers it yet), and a frontend
+payment UI.
+
+**Phase 15 Step 3 (no request/response shape change):** `status` can now
+actually be `EXPIRED` — a payment left `PENDING` past
+`payment.expiration-minutes` (default 15) is expired server-side by a
+scheduled sweep, and its booking is released. Clients read this through the
+existing `GET` endpoints. Booking/payment reconciliation is internal: its
+status column is not part of `PaymentResponse`, and no endpoint triggers or
+reports it. booking-service's internal `POST /internal/bookings/{id}/confirm`
+and `/cancel` return 200 with the unchanged booking when it is already
+`CONFIRMED` / `CANCELLED` (previously 409), so retries are safe. (These were
+the public `/api/bookings/{id}/confirm` and `/cancel` before the Step 4
+follow-ups; the public confirm no longer exists — see "Booking access rules"
+below.)
+
+**Phase 15 Step 4 (behavior fixes found by live testing; no shape change):**
+`POST /api/bookings` now answers `409 INVALID_SEAT_STATE` ("already has an
+active booking") when a requested seat already belongs to a `PENDING` or
+`CONFIRMED` booking — previously several callers could each create a booking
+on the same `HELD` seat. `POST /api/payments` submitted concurrently with the
+same `idempotencyKey` returns the same payment to every caller (`201` to
+the first, `200` to the rest, `status` possibly still `CREATED`/`PENDING`)
+instead of `409` to the later ones. Also observed: `/api/payments/**` falls
+under the Gateway's fallback rate limit (2/s, burst 5) for every user tier,
+and `POST` responses report `createdAt`/`updatedAt` as `null` (a `GET`
+returns them).
+
+**Why not `/api/bookings/{bookingId}/payment`** (a plausible-looking first
+guess): the Gateway's existing `booking-service` route already matches
+`Path=/api/bookings/**` — any path starting with `/api/bookings/` would be
+routed to `booking-service`, not a new `payment-service`, regardless of
+what comes after. The lookup-by-booking endpoint below instead uses a
+query parameter on the payment collection
+(`GET /api/payments?bookingId=...`), mirroring this codebase's own existing
+convention for the same kind of lookup
+(`GET /api/bookings?userId=...` — "bookings for a user").
+
+## Error response shape
+
+Same uniform shape every other service already uses:
+`{"status":..., "error":"...", "message":"...", "timestamp":"..."}`.
+
+| `error` code | HTTP status | Cause |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | Missing/malformed request field |
+| `UNAUTHENTICATED` | 401 | Missing/invalid JWT (from the Gateway) |
+| `FORBIDDEN` | 403 | Authenticated, but not the booking's owner and not an admin, on `POST /api/payments` specifically |
+| `BOOKING_NOT_FOUND` | 404 | `bookingId` doesn't resolve to a real booking (from `booking-service`) |
+| `PAYMENT_NOT_FOUND` | 404 | `paymentId` (or the booking's payment, for the by-booking lookup) doesn't exist — **also** returned, deliberately, when the payment exists but the caller doesn't own it (see "Security" in §25.1: avoids confirming existence to an unauthorized caller, a considered but revisitable choice) |
+| `DUPLICATE_PAYMENT_FOR_BOOKING` | 409 | The booking already has a non-terminal-failure (`CREATED`/`PENDING`/`SUCCESS`) payment, **or** the referenced booking itself isn't `PENDING` (already confirmed/cancelled elsewhere) |
+| `IDEMPOTENCY_KEY_CONFLICT` | 409 | The same `idempotencyKey` was reused for a different booking |
+| `BOOKING_SERVICE_UNAVAILABLE` | 503 | booking-service itself couldn't be reached or returned an unexpected error — an operational dependency failure, not a client mistake; the underlying cause is logged server-side, never in the response |
+| `INVALID_PAYMENT_STATE` | — | Not implemented — no mutating transition beyond creation exists yet in this step |
+
+## `POST /api/payments`
+
+**Authentication:** required — `Authorization: Bearer <accessToken>`.
+
+**Authorization:** the caller (any valid JWT — `CUSTOMER` or `ADMIN`,
+there's no role-specific denial here) must be the owning booking's
+customer — `payment-service` calls `booking-service`'s
+`GET /api/bookings/{bookingId}` and compares the returned `userId` against
+the JWT's own `sub` claim (never a client-supplied `userId` field). In
+practice this means an `ADMIN` account can only create a payment for a
+booking that account itself owns, the same rule as any customer — there is
+no separate "pay on a customer's behalf" capability in this design.
+
+**Request body:**
+```json
+{
+  "bookingId": "b3f1...",
+  "idempotencyKey": "3f9e6b6a-...-unique-per-checkout-attempt"
+}
+```
+- `bookingId`: required, must resolve to a booking owned by the caller.
+- `idempotencyKey`: required, client-generated (e.g. a UUID minted once per
+  checkout attempt and reused only for a genuine retry of that same
+  attempt).
+- **`provider` is not a request field** — exactly one provider is wired for
+  this step (`MOCK`, via `payment.default-provider` server-side
+  configuration, not a per-request choice — see §25.2).
+- **`amount`/`currency` are deliberately not accepted here** — computed
+  server-side from the booking's own `total_amount`, so a client cannot
+  alter what it is charged.
+
+**Success response — `201 Created`** (new payment) **or `200 OK`**
+(idempotent replay of an existing payment for the same key):
+```json
+{
+  "id": "8a2c...",
+  "bookingId": "b3f1...",
+  "userId": "c9d0...",
+  "amount": "1450.00",
+  "currency": "INR",
+  "status": "SUCCESS",
+  "provider": "MOCK",
+  "providerReference": "mock_txn_...",
+  "createdAt": "2026-09-26T10:00:00Z",
+  "updatedAt": "2026-09-26T10:00:01Z"
+}
+```
+`status` reflects wherever the (mock, currently synchronous) provider call
+landed by the time this response is written — `SUCCESS` or `FAILED` for
+the mock provider, since it resolves immediately; a real, asynchronous
+provider could instead return this same shape with `status: "PENDING"`,
+resolved later (see §25.1 scenario D).
+
+**Error responses:** `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED`,
+`403 FORBIDDEN` (not this booking's owner), `404 BOOKING_NOT_FOUND`,
+`409 DUPLICATE_PAYMENT_FOR_BOOKING` (also used when the booking itself
+isn't `PENDING`), `409 IDEMPOTENCY_KEY_CONFLICT`,
+`503 BOOKING_SERVICE_UNAVAILABLE`.
+
+## `GET /api/payments/{paymentId}`
+
+**Authentication:** required. **Authorization:** the payment's own
+`userId` must match the caller's JWT `sub`, **or** the caller is an admin
+(`role=ADMIN`) — read-only either way.
+
+**Response — `200 OK`:** the same `PaymentResponse` shape as above.
+
+**Error responses:** `400 VALIDATION_ERROR` (`paymentId` isn't a well-formed
+UUID), `401 UNAUTHENTICATED`, `404 PAYMENT_NOT_FOUND` (used for both
+"doesn't exist" and "exists but you don't own it and aren't an admin" —
+see the error-code table above).
+
+## `GET /api/payments?bookingId={bookingId}`
+
+**Authentication:** required. **Authorization:** same ownership rule as
+above, checked against the booking's owner.
+
+A convenience lookup for "the payment for this booking" without already
+knowing a `paymentId` — returns the single non-terminal-failure payment if
+one exists, otherwise the most recent terminal one (ordered by
+`createdAt DESC`), matching the data model's "at most one live payment per
+booking" invariant (§25.1). Not a list endpoint despite the plural path —
+a booking has at most one *meaningful* current payment to return. Looks up
+`payments` directly by `booking_id`; does **not** itself call
+booking-service to confirm the booking exists — a `bookingId` for a real
+but never-paid-for booking and a wholly made-up `bookingId` are
+indistinguishable here, both `404 PAYMENT_NOT_FOUND`.
+
+**Response — `200 OK`:** the same `PaymentResponse` shape. **Error
+responses:** `400 VALIDATION_ERROR` (missing `bookingId`),
+`401 UNAUTHENTICATED`, `404 PAYMENT_NOT_FOUND` (no payment exists for this
+booking — see above).
+
+## Gateway routing (implemented)
+
+```yaml
+- id: payment-service
+  uri: http://localhost:8084
+  predicates:
+    - Path=/api/payments/**
+```
+
+Port `8084` — the next port in the existing sequence (gateway `8080`, user
+`8081`, catalog `8082`, booking `8083`). No new Gateway *security* code was
+needed: `GatewaySecurityConfig`'s existing `.anyExchange().authenticated()`
+catch-all already protects the route automatically, the same way
+catalog-service's and booking-service's routes needed no Gateway security
+changes when they were first added — confirmed by `GatewayPaymentRouteTest`
+(unauthenticated rejected, authenticated request reaches payment-service,
+the three existing top-level routes are unaffected). Not a wildcard route
+under `/api/admin/**`'s narrow-per-endpoint discipline — this is a new
+top-level business resource, like `/api/bookings/**`/`/api/catalog/**`, not
+an admin sub-resource.
+
+---
+
 ## CORS (browser clients)
 
 Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) could call `user-service` from the browser — different origins, so without this the browser's preflight `OPTIONS` request is rejected before the real request is ever sent. **Since Phase 7.2 the frontend calls the API Gateway instead, and the gateway's own CORS config is what the browser actually hits** (see `backend/gateway-service/README.md`). This `user-service` config is kept as defense-in-depth for direct calls; the gateway removes the resulting duplicate `Access-Control-Allow-Origin` header on proxied responses.
@@ -743,6 +982,41 @@ Added in Phase 6 so the frontend (Vite dev server, `http://localhost:5173`) coul
 - An origin not on the list gets `403` on preflight.
 
 Once an API Gateway fronts these services, CORS should be configured there instead of per service.
+
+---
+
+## Operational endpoints (Phase 14 — Step 1: Actuator health + Prometheus metrics)
+
+**Phase 14 is not complete.** This is Step 1 only — Actuator/Micrometer endpoints exist on each backend service, but no Prometheus server, Grafana dashboard, custom `rate_limit.requests` metric, distributed tracing, or alerting has been added. See `docs/architecture.md` for the full Phase 14 status and the remaining steps.
+
+Each of the four backend services now exposes two Actuator endpoint groups, added identically to `gateway-service` (`:8080`), `user-service` (`:8081`), `catalog-service` (`:8082`), and `booking-service` (`:8083`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /actuator/health` | Overall status (`{"status":"UP"}`, no component detail — `show-details` is left at Spring Boot's default of `never`) |
+| `GET /actuator/health/liveness` | Is the JVM up and able to serve requests at all |
+| `GET /actuator/health/readiness` | Are this service's dependencies reachable — see below |
+| `GET /actuator/prometheus` | Metrics in Prometheus text exposition format (`http_server_requests`, JVM/process/system metrics, etc. — Micrometer/Actuator defaults; no custom metrics yet) |
+
+**These are service-local operational endpoints, not Gateway `/api/**` routes.** They are not proxied — `gateway-service`'s own `application.yml` `spring.cloud.gateway.routes` list has no entry for `/actuator/**`; a request to `http://localhost:8080/actuator/health` is answered by `gateway-service` itself (it runs its own copy of these endpoints), never forwarded to user/catalog/booking-service. To reach `user-service`'s (or catalog's/booking's) own health/metrics, call its port directly (e.g. `http://localhost:8081/actuator/health`) — there is no gateway-level aggregation.
+
+**Only `health` and `prometheus` are exposed.** `management.endpoints.web.exposure.include` is explicitly set to `health,prometheus` (never `*`) on all four services — `/actuator/env`, `/actuator/beans`, `/actuator/configprops`, `/actuator/mappings`, `/actuator/loggers`, `/actuator/heapdump`, and every other Actuator endpoint id are not registered at all and return `404`.
+
+**Authentication:**
+- `gateway-service` and `user-service` (the two services with a Spring Security filter chain of their own): the four paths above are explicitly allowlisted with `permitAll()`/narrow `pathMatchers(...)` — not a blanket `/actuator/**` permit — so they are reachable without an Eventtick JWT, while every other path's existing authentication/authorization rule (`/api/admin/**` requires `ROLE_ADMIN`, everything else requires a valid JWT) is unchanged.
+- `catalog-service` has no Spring Security dependency at all — every endpoint, including its `/api/admin/**` ones, is open at the service level (role enforcement happens entirely at the Gateway). Actuator is reachable there the same way every other endpoint already is; nothing new needed to be permitted.
+- `booking-service` (as of the Phase 15 Step 4 follow-up — see "Booking access rules" above) validates JWTs; its `SecurityConfig` allowlists exactly the same four Actuator paths, so they remain reachable without a token.
+
+**Readiness and the existing fail-open/degraded-dependency behavior:**
+- `user-service`/`catalog-service`/`booking-service`: the `readiness` group only contains Spring Boot's own `readinessState` app-availability marker by default (unrelated to any dependency) — `db` was added to it explicitly (`management.endpoint.health.group.readiness.include: readinessState,db`) so PostgreSQL connectivity actually participates in readiness, via the auto-configured `DataSourceHealthIndicator`. No custom `HealthIndicator` code was written.
+- `gateway-service`: readiness was left at the default (`readinessState` only) — Redis connectivity instead participates in the top-level, aggregate `/actuator/health` automatically, via the auto-configured Redis health indicator against the existing `spring.data.redis.*` connection, with no group configuration needed. This is **diagnostic only** — a `DOWN` Redis status here does not change `RateLimitingGlobalFilter`'s existing fail-open behavior (a request is still allowed through when Redis is unreachable) and does not reject Gateway requests, and `/actuator/health/readiness` specifically stays unaffected by Redis (so a probe gated on readiness alone is never tripped by it). No rate-limit, JWT, CORS, timeout, or FR-40 behavior was changed.
+- Testing note: this project's embedded test-Redis (`com.github.codemonstur:embedded-redis`, used by `GatewayActuatorTest` and the rate-limit test suite) returns an `INFO` command response that Spring Data Redis 3.3.4's health indicator cannot parse (`RedisSystemException: Cannot read Redis info`), so the aggregate `/actuator/health` reports `DOWN` under that specific test double even though Redis itself is fully functional there for rate limiting (`INCR`/`EVAL`, which don't use `INFO`). A real Redis server does not have this limitation; `GatewayActuatorTest`'s health test asserts the endpoint is reachable and well-formed rather than pinning it to `UP` for this reason.
+
+**Phase 14, Step 2 (local Prometheus scraping):** `monitoring/prometheus.yml` configures a standalone Prometheus *server* (run separately by a developer, not part of any Eventtick service) to scrape the four `/actuator/prometheus` endpoints above directly, on their own ports — never through the Gateway. See `docs/architecture.md` §46.3 and `monitoring/README.md`. Prometheus itself is external tooling, not an Eventtick API, and is not otherwise documented in this file.
+
+**Phase 14, Step 3 (local Grafana visualization):** `monitoring/grafana/` configures a standalone Grafana *server* (also run separately by a developer) that queries the Prometheus server above over PromQL. Grafana does not call any endpoint documented in this file — it never scrapes the four services directly and is never routed through the Gateway. See `docs/architecture.md` §46.4 and `monitoring/grafana/README.md`. Like Prometheus, Grafana is external tooling, not an Eventtick API, and this pointer is the only mention of it in this file.
+
+**Not yet implemented (future Phase 14 steps):** the custom `rate_limit.requests` Micrometer counter, distributed tracing, alerting, and Docker/Compose packaging for any of the above.
 
 ---
 

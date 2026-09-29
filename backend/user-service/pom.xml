@@ -71,6 +71,18 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Phase 14 Step 1: health (liveness/readiness, DB participates via
+             the auto-configured DataSourceHealthIndicator) and Prometheus
+             metrics endpoints. Service-local only — never routed through the
+             Gateway. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

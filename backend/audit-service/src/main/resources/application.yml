@@ -1,0 +1,96 @@
+spring:
+  application:
+    name: audit-service
+  datasource:
+    # Points at the existing eventtick_db for now, same as every other
+    # service — docs/architecture.md §17 describes database-per-service as
+    # a future target, not required for the current local setup. Never
+    # commit real credentials — these fall back to environment variables
+    # with no hardcoded password.
+    url: jdbc:postgresql://localhost:5432/eventtick_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:}
+  jpa:
+    # The schema is fully owned by database/migrations/ (see
+    # database/README.md). Hibernate must never auto-generate or alter it.
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  kafka:
+    # Same env var name booking-service's producer side already uses — one
+    # shared broker location across every Kafka-aware service, not a
+    # per-service variable. See backend/booking-service's own comment for
+    # why localhost:9092 as the unset-environment fallback is not a
+    # "localhost-only" assumption baked into the config's meaning.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # eventtick-booking-audit (Phase 16 Step 3 §3): a fixed, meaningful,
+      # never-randomly-generated group id, so this service's committed
+      # offsets survive a restart under the same identity — a fresh random
+      # group id on every start would silently replay the whole topic from
+      # `earliest` every time, defeating the entire point of a durable,
+      # once-only audit projection.
+      group-id: ${KAFKA_BOOKING_AUDIT_GROUP_ID:eventtick-booking-audit}
+      # A durable audit trail should not silently miss events published
+      # before this consumer group's very first start — earliest, not
+      # latest (only matters the first time this group id is ever used;
+      # after that, its committed offset always takes precedence).
+      auto-offset-reset: earliest
+      # Plain strings on the wire — the consumer side of the same choice
+      # booking-service's producer already made (docs/architecture.md
+      # §47.5's "inspectable" requirement): the raw JSON envelope is parsed
+      # by hand (a flexible JsonNode tree, not a shared Java class this
+      # service has no dependency on), not Spring Kafka's class-based
+      # JsonDeserializer<T>.
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Never auto-commit an offset merely because a record was polled —
+      # BookingCreatedConsumer commits the database write first and only
+      # then acknowledges (docs/architecture.md §49.6/§49.7).
+      enable-auto-commit: false
+    listener:
+      # MANUAL_IMMEDIATE: the container commits the offset synchronously,
+      # exactly when (and only when) BookingCreatedConsumer/
+      # PaymentSucceededConsumer call Acknowledgment#acknowledge() — never
+      # before, never automatically. Shared by every listener container in
+      # this service (a factory-level setting), including
+      # PaymentSucceededConsumer (Phase 16 Step 4) — no separate consumer
+      # factory was introduced for it.
+      ack-mode: MANUAL_IMMEDIATE
+
+# Phase 16 Step 4: PaymentSucceededConsumer's own group id — deliberately
+# NOT spring.kafka.consumer.group-id (that one is BookingCreatedConsumer's,
+# referenced explicitly by its own @KafkaListener's groupId attribute).
+# eventtick.booking and eventtick.payment are two different topics with
+# two entirely independent consumption progress/offsets; each listener
+# gets its own fixed, restart-stable, never-randomly-generated group id —
+# see PaymentSucceededConsumer's own Javadoc for why sharing one group id
+# across both would be wrong, not just untidy.
+eventtick:
+  consumers:
+    payment-audit-group-id: ${KAFKA_PAYMENT_AUDIT_GROUP_ID:eventtick-payment-audit}
+
+server:
+  port: 8085
+
+# Phase 14 Step 1 parity: service-local health/metrics endpoints.
+# Deliberately not management.endpoints.web.exposure.include: "*" — only
+# health and prometheus are exposed. Never routed through the Gateway.
+#
+# Unlike booking-service (which disables the Kafka health indicator,
+# because booking creation doesn't depend on Kafka being reachable), this
+# service's Kafka indicator is left enabled: consuming from Kafka is this
+# service's entire job, so a Kafka-unreachable audit-service genuinely is
+# unhealthy in a way that's worth surfacing, not something to hide.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db

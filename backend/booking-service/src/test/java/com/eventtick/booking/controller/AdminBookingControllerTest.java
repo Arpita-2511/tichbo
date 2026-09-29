@@ -8,7 +8,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import com.eventtick.booking.config.SecurityConfig;
+import com.eventtick.booking.security.JwtService;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -47,6 +51,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * gateway's own {@code GatewayAdminAuthorizationTest}).
  */
 @WebMvcTest(AdminBookingController.class)
+// booking-service now authenticates every /api/** request and requires ROLE_ADMIN on
+// /api/admin/** (defense in depth behind the Gateway), so this slice imports the real
+// SecurityConfig and runs as an administrator.
+@Import({SecurityConfig.class, JwtService.class})
+@WithMockUser(roles = "ADMIN")
 class AdminBookingControllerTest {
 
     @Autowired

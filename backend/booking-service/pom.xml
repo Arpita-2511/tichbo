@@ -22,6 +22,7 @@
 
     <properties>
         <java.version>17</java.version>
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencies>
@@ -40,15 +41,77 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!-- Booking ownership (BR-07) needs the caller's identity, so this
+             service validates the same user-service-issued JWT payment-service
+             already does (same secret/issuer/audience, `sub` = user id,
+             `role` claim). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- Phase 16 Step 2: publishes domain events (BookingCreated first)
+             via the transactional outbox — see docs/architecture.md §47.9,
+             §48. Version comes from spring-boot-starter-parent's own
+             dependency management (no explicit <version>), the same
+             convention every other starter here already follows. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Phase 14 Step 1: health (liveness/readiness, DB participates via
+             the auto-configured DataSourceHealthIndicator) and Prometheus
+             metrics endpoints. Service-local only — never routed through the
+             Gateway. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real, in-process Kafka broker for the publisher's own tests
+             (@EmbeddedKafka) — the same "real infrastructure over a mock"
+             choice already made for Redis (embedded-redis, see
+             docs/architecture.md's "Redis testing" note) and for
+             booking-service's own JWT-secured HTTP tests, applied to Kafka.
+             Every other test in this module needs no Kafka at all. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- In-memory DB for tests only, so `mvn test` doesn't require a

@@ -49,9 +49,9 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyEighteenRoutesAreRegistered() {
+    void exactlyNineteenRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "payment-service",
                         "admin-content", "admin-content-stats", "admin-content-by-id", "admin-show-cancel",
                         "admin-shows", "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
                         "admin-bookings-stats", "admin-show-seat-activity", "admin-users", "admin-users-stats",
@@ -63,6 +63,12 @@ class GatewayRoutesTest {
         assertRoutedTo("/api/auth/login", "user-service", "http://localhost:8081");
         assertRoutedTo("/api/auth/register", "user-service", "http://localhost:8081");
         assertRoutedTo("/api/users/me", "user-service", "http://localhost:8081");
+    }
+
+    @Test
+    void paymentPaths_goToPaymentService() {
+        assertRoutedTo("/api/payments", "payment-service", "http://localhost:8084");
+        assertRoutedTo("/api/payments/8a2c1e3d-0000-0000-0000-000000000000", "payment-service", "http://localhost:8084");
     }
 
     @Test

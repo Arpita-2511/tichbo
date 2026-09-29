@@ -1,0 +1,23 @@
+# Eventtick — Grafana dashboard provisioning (Phase 14, Step 3).
+#
+# Tells Grafana to auto-load every dashboard JSON file from
+# monitoring/grafana/dashboards/ on startup, instead of importing the
+# dashboard by hand through the UI. See monitoring/grafana/README.md for
+# how `path` below needs to be set for your machine — Grafana requires an
+# absolute filesystem path here, so the value committed in this repository
+# is only an example, not something that works unmodified on every machine.
+
+apiVersion: 1
+
+providers:
+  - name: Eventtick
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Example for this repository's layout on Windows — replace with your
+      # own checkout's absolute path to monitoring/grafana/dashboards.
+      path: C:\Users\ADMIN\Desktop\tichboo\monitoring\grafana\dashboards

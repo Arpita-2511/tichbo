@@ -1,0 +1,88 @@
+spring:
+  datasource:
+    # In-memory database for tests only, so `mvn test` never requires a
+    # live PostgreSQL connection. Takes precedence over
+    # src/main/resources/application.yml on the test classpath (this file
+    # replaces it entirely, same as every other service in this project).
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      # Unlike catalog-service/booking-service (ddl-auto: none, tested via
+      # @WebMvcTest + mocked service), payment-service's correctness
+      # genuinely depends on a real database constraint (the idempotency
+      # key's UNIQUE constraint) — so, like user-service, tests here need
+      # Hibernate to generate real tables from the entity mapping. Scoped to
+      # the ephemeral H2 test database ONLY; src/main/resources/application.yml
+      # (the real PostgreSQL connection) still uses ddl-auto: none.
+      ddl-auto: create-drop
+    open-in-view: false
+  # Phase 16 Step 4. bootstrap-servers points nowhere real by default —
+  # fine, since publish-sweep-interval-ms below is deliberately huge so
+  # PaymentOutboxPublisher's @Scheduled sweep never actually fires in an
+  # ordinary @SpringBootTest context — same reasoning, same pattern,
+  # booking-service's own test application.yml already establishes. Tests
+  # that exercise the sweep call PaymentOutboxPublisher#publishPending
+  # directly, pointed at either a real @EmbeddedKafka broker or a
+  # deliberately unreachable address, via @DynamicPropertySource.
+  kafka:
+    bootstrap-servers: localhost:1
+
+# JwtAuthenticationFilter/JwtService require these (@Value, no inline
+# default) — src/main/resources/application.yml is NOT merged with this
+# file on the test classpath, so they must be repeated here, identical to
+# user-service's and gateway-service's own test secrets so minted test
+# tokens validate the same way.
+jwt:
+  secret: test-only-secret-for-the-spring-context-must-be-at-least-32-bytes
+  issuer: eventtick-user-service
+  audience: eventtick-clients
+
+booking-service:
+  # Overridden per-test via @DynamicPropertySource, pointed at a real (tiny,
+  # JDK-built-in com.sun.net.httpserver.HttpServer-based) stub — see
+  # StubBookingService in the test sources. This default is never actually
+  # used by a passing test.
+  base-url: http://localhost:1
+
+payment:
+  default-currency: INR
+  default-provider: MOCK
+  expiration-minutes: 15
+  # Deliberately huge in tests: PaymentLifecycleScheduler's @Scheduled
+  # sweeps are real and active in any full @SpringBootTest context (via
+  # @EnableScheduling), and a background sweep firing mid-test — against
+  # the same H2 database a test is asserting on, or attempting a real
+  # network call to the dummy booking-service.base-url below — would be a
+  # source of flakiness having nothing to do with what a given test
+  # actually checks. Tests that exercise the sweeps call
+  # PaymentService#expirePendingPayments/#reconcilePendingBookingSync
+  # directly instead of waiting on a timer (see PaymentExpirationTest/
+  # PaymentReconciliationTest) — these intervals just need to be long
+  # enough to never fire during a normal test run, not to be realistic.
+  expiration-sweep-interval-ms: 999999999
+  reconciliation-sweep-interval-ms: 999999999
+
+eventtick:
+  events:
+    producer: payment-service
+    publish-sweep-interval-ms: 999999999
+    publish-batch-size: 50
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    kafka:
+      enabled: false

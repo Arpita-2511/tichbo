@@ -1,0 +1,45 @@
+spring:
+  datasource:
+    # In-memory database for tests only, so `mvn test` never requires a
+    # live PostgreSQL connection. Takes precedence over
+    # src/main/resources/application.yml on the test classpath.
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: none
+  kafka:
+    # Points nowhere real by default — fine, since no test relies on this
+    # default: @EmbeddedKafka-based tests override bootstrap-servers via
+    # @DynamicPropertySource, and every other test (repository/service
+    # unit tests) never starts the Kafka consumer machinery at all.
+    bootstrap-servers: localhost:1
+    consumer:
+      group-id: eventtick-booking-audit
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      enable-auto-commit: false
+    listener:
+      ack-mode: MANUAL_IMMEDIATE
+
+# Phase 16 Step 4: PaymentSucceededConsumer's own fixed group id — see
+# src/main/resources/application.yml's own comment.
+eventtick:
+  consumers:
+    payment-audit-group-id: eventtick-payment-audit
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db

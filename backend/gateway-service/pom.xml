@@ -68,6 +68,20 @@
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
 
+        <!-- Phase 14 Step 1: health (liveness/readiness, Redis participates
+             via the auto-configured reactive Redis health indicator — purely
+             diagnostic, does not change the rate limiter's existing fail-open
+             behavior) and Prometheus metrics endpoints. Service-local only,
+             never added to spring.cloud.gateway.routes. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

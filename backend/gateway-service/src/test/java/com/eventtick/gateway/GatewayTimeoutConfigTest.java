@@ -51,7 +51,7 @@ class GatewayTimeoutConfigTest {
         List<Route> routes = routeLocator.getRoutes().collectList().block();
 
         assertThat(routes).extracting(Route::getId)
-                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service",
+                .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "payment-service",
                         "admin-content", "admin-content-stats", "admin-content-by-id", "admin-show-cancel",
                         "admin-shows", "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
                         "admin-bookings-stats", "admin-show-seat-activity", "admin-users", "admin-users-stats",

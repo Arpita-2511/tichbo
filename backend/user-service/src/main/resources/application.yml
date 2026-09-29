@@ -19,6 +19,28 @@ spring:
 server:
   port: 8081
 
+# Phase 14 Step 1: service-local health/metrics endpoints. Deliberately not
+# management.endpoints.web.exposure.include: "*" — only health and prometheus
+# are exposed, so env/beans/configprops/mappings/loggers/heapdump etc. stay
+# unavailable. Never routed through the Gateway.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # The "readiness" group only contains readinessState by default (an
+      # app-availability marker, unrelated to any dependency) — "db" is
+      # added explicitly so PostgreSQL connectivity actually participates in
+      # readiness, via Actuator's auto-configured DataSourceHealthIndicator
+      # (no custom HealthIndicator code).
+      group:
+        readiness:
+          include: readinessState,db
+
 # Phase 5 (Authentication Backend). All overridable via environment
 # variables; the fallback values after ':' are LOCAL-DEV-ONLY and
 # intentionally not secret-grade — never rely on these outside a laptop.

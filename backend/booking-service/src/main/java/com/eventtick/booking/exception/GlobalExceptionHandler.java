@@ -26,6 +26,11 @@ public class GlobalExceptionHandler {
         return respond(HttpStatus.NOT_FOUND, "BOOKING_NOT_FOUND", ex.getMessage());
     }
 
+    @ExceptionHandler(BookingAccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleBookingAccessDenied(BookingAccessDeniedException ex) {
+        return respond(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage());
+    }
+
     @ExceptionHandler(EntityNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleShowSeatNotFound(EntityNotFoundException ex) {
         return respond(HttpStatus.NOT_FOUND, "SHOW_SEAT_NOT_FOUND", ex.getMessage());

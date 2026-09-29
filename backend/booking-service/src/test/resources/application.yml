@@ -1,4 +1,6 @@
 spring:
+  kafka:
+    bootstrap-servers: localhost:1
   datasource:
     # In-memory database for tests only, so `mvn test` never requires a
     # live PostgreSQL connection. Takes precedence over
@@ -10,3 +12,48 @@ spring:
   jpa:
     hibernate:
       ddl-auto: none
+
+# JwtService requires these (@Value, no inline default). Identical to
+# payment-service's/user-service's/gateway-service's test secrets so minted
+# test tokens validate the same way.
+jwt:
+  secret: test-only-secret-for-the-spring-context-must-be-at-least-32-bytes
+  issuer: eventtick-user-service
+  audience: eventtick-clients
+
+# Repeated here for the same reason as the datasource block above (Phase 14
+# Step 1): src/main/resources/application.yml is not merged with this file on
+# the test classpath, and tests asserting GET /actuator/prometheus behavior
+# need it actually exposed — health is Actuator's default-exposed endpoint
+# even with no config, but prometheus is not.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    kafka:
+      enabled: false
+
+# Phase 16 Step 2. bootstrap-servers points nowhere real by default — fine,
+# since publish-sweep-interval-ms below is deliberately huge so
+# OutboxPublisher's @Scheduled sweep never actually fires in an ordinary
+# @SpringBootTest context (it would otherwise run in the background of
+# every one of them, exactly the @EnableScheduling risk
+# PaymentLifecycleScheduler's own test config already documents and avoids
+# the same way). Tests that exercise the sweep call
+# OutboxPublisher#publishPending directly, pointed at either a real
+# @EmbeddedKafka broker or a deliberately unreachable address, via
+# @DynamicPropertySource — never this default.
+eventtick:
+  events:
+    producer: booking-service
+    publish-sweep-interval-ms: 999999999
+    publish-batch-size: 50
