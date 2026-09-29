@@ -17,13 +17,13 @@
 import type {
   Content, Venue, Show, Booking, User, Plan,
   AdminStats, AdminOverviewStats, RateLimitStatsResponse, SearchResult, EventFilters, ContentType,
-  SeatSection, SubscriptionPlan
+  Seat, SeatRow, SeatSection, SeatCategory, SeatStatus, SubscriptionPlan
 } from '../types';
 
 import {
   movies, sportsEvents, concerts, theatreEvents, generalEvents,
   allEvents, venues, shows, mockBookings, mockUser, plans,
-  adminStats, generateSeatSections, rateLimitPolicies
+  adminStats, rateLimitPolicies
 } from '../data/mockData';
 
 // ─── API Client Configuration ─────────────────────────────────────────────────
@@ -119,9 +119,164 @@ export async function getShowById(showId: string): Promise<Show | null> {
 
 // ─── Seats ───────────────────────────────────────────────────────────────────
 
+// The one field getSeatMap needs from GET /api/catalog/shows/{id} (catalog
+// ShowResponse) — which venue this show is in.
+interface BackendShow { venueId: string; }
+
+// catalog-service's SeatResponse (GET /api/catalog/seats?venueId=) — the
+// physical, venue-owned seat: section/row/number/type. Does not vary per
+// show, and is never invented from the booking-service response.
+interface BackendCatalogSeat {
+  id: string;
+  venueId: string;
+  section: string;
+  row: string;
+  seatNumber: number;
+  seatType: 'STANDARD' | 'PREMIUM' | 'VIP';
+}
+
+// booking-service's SeatMapResponse (GET /api/bookings/shows/{showId}/seats)
+// — show-specific availability and price. showSeatId (not seatId) becomes
+// Seat.id: it's the id a future hold/booking call needs (createBooking is
+// still mock — see this file's own header comment — but the seat map must
+// already expose the right id for when that's wired up).
+interface BackendShowSeat {
+  showSeatId: string;
+  seatId: string;
+  status: 'AVAILABLE' | 'HELD' | 'BOOKED';
+  price: number;
+}
+interface BackendSeatMapResponse { showId: string; seats: BackendShowSeat[] }
+
+function toSeatCategory(seatType: BackendCatalogSeat['seatType']): SeatCategory {
+  switch (seatType) {
+    case 'VIP': return 'VIP';
+    case 'PREMIUM': return 'PREMIUM';
+    case 'STANDARD': return 'REGULAR';
+  }
+}
+
+// HELD is another customer's in-progress hold, not this browser's own local
+// selection — 'SELECTED' is frontend-only UI state that SeatMap.tsx itself
+// manages and is never produced here. From this browser's point of view a
+// HELD seat is exactly as unavailable as a BOOKED one.
+function toSeatStatus(status: BackendShowSeat['status']): SeatStatus {
+  switch (status) {
+    case 'AVAILABLE': return 'AVAILABLE';
+    case 'BOOKED': return 'BOOKED';
+    case 'HELD': return 'UNAVAILABLE';
+  }
+}
+
+/**
+ * The real seat map (catalog-service's physical seat metadata joined with
+ * booking-service's show-specific availability/pricing) — replaces the
+ * mock {@code generateSeatSections}.
+ *
+ * booking-service's {@code show_seats} is the authoritative driving set
+ * (see docs/architecture.md's ownership model): every entry comes from
+ * {@code seatMap.seats}, looked up against its catalog seat by
+ * {@code catalogSeat.id === showSeat.seatId} — never by array position or
+ * by row/number, and never the reverse (iterating catalog seats would let
+ * a seat with no show-seat record for this show render as if it existed).
+ * A show-seat with no matching catalog record (a data inconsistency, not
+ * expected in practice) is skipped rather than rendered with fabricated
+ * row/number/category — there is nothing to invent it from.
+ */
 export async function getSeatMap(showId: string): Promise<SeatSection[]> {
-  await delay(500);  // seat maps may take longer in real system
-  return generateSeatSections(showId);
+  const show = await request<BackendShow>(`/api/catalog/shows/${showId}`, { auth: true });
+
+  const [catalogSeats, seatMap] = await Promise.all([
+    request<BackendCatalogSeat[]>(`/api/catalog/seats?venueId=${show.venueId}`, { auth: true }),
+    request<BackendSeatMapResponse>(`/api/bookings/shows/${showId}/seats`, { auth: true }),
+  ]);
+  const catalogSeatById = new Map(catalogSeats.map(s => [s.id, s]));
+
+  const seats: Seat[] = [];
+  for (const showSeat of seatMap.seats) {
+    const catalogSeat = catalogSeatById.get(showSeat.seatId);
+    if (!catalogSeat) continue;
+
+    seats.push({
+      id: showSeat.showSeatId,
+      showId,
+      row: catalogSeat.row,
+      number: catalogSeat.seatNumber,
+      label: `${catalogSeat.row}${catalogSeat.seatNumber}`,
+      category: toSeatCategory(catalogSeat.seatType),
+      price: showSeat.price,
+      status: toSeatStatus(showSeat.status),
+    });
+  }
+
+  return groupIntoSections(seats);
+}
+
+// category -> row -> seats (row order stable within a category: VIP, then
+// PREMIUM, then REGULAR — the same fixed priority order the previous mock
+// generator used, not alphabetical/backend order). Seats within a row are
+// sorted by seat number ascending — never relying on backend ordering.
+//
+// A section's `price` is the lowest price among its own seats: SeatMap.tsx
+// only ever displays it as a single "— ₹N" label beside the category
+// heading (never as a total), so a real per-category price spread is not
+// silently discarded — every seat still carries and is billed at its own
+// exact `price` — but the label needs one representative number, and the
+// conventional, honest choice for that is "starting from".
+function groupIntoSections(seats: Seat[]): SeatSection[] {
+  const CATEGORY_ORDER: SeatCategory[] = ['VIP', 'PREMIUM', 'REGULAR'];
+
+  const byCategory = new Map<SeatCategory, Map<string, Seat[]>>();
+  for (const seat of seats) {
+    let rows = byCategory.get(seat.category);
+    if (!rows) { rows = new Map(); byCategory.set(seat.category, rows); }
+    let rowSeats = rows.get(seat.row);
+    if (!rowSeats) { rowSeats = []; rows.set(seat.row, rowSeats); }
+    rowSeats.push(seat);
+  }
+
+  const sections: SeatSection[] = [];
+  for (const category of CATEGORY_ORDER) {
+    const rowsByLabel = byCategory.get(category);
+    if (!rowsByLabel) continue;
+
+    let minPrice = Infinity;
+    const seatRows: SeatRow[] = [...rowsByLabel.keys()].sort().map(row => {
+      const rowSeats = rowsByLabel.get(row)!.sort((a, b) => a.number - b.number);
+      for (const s of rowSeats) minPrice = Math.min(minPrice, s.price);
+      return { row, category, seats: rowSeats };
+    });
+
+    sections.push({ category, price: minPrice, rows: seatRows });
+  }
+  return sections;
+}
+
+// The booking service's own hold response (SeatMapResponse's shape,
+// reused — see SeatMapItemDto): the seats that actually ended up HELD.
+export interface HoldSeatsInput {
+  userId: string;
+  showSeatIds: string[];
+}
+export interface HeldSeat { showSeatId: string; seatId: string; status: 'HELD'; price: number }
+export interface HoldSeatsResponse { showId: string; heldSeats: HeldSeat[] }
+
+/**
+ * POST /api/bookings/shows/{showId}/seats/hold — AVAILABLE -> HELD for the
+ * given show-seats. `data.showSeatIds` are {@link Seat.id} values from
+ * {@link getSeatMap} (which already maps Seat.id to the booking-service's
+ * own showSeatId — see that function's own comments), not catalog seat ids.
+ *
+ * Throws {@link ApiError} on failure (e.g. 409 if a seat is no longer
+ * AVAILABLE) — the caller decides how to present that, same convention as
+ * every other real call in this file.
+ */
+export async function holdSeats(showId: string, data: HoldSeatsInput): Promise<HoldSeatsResponse> {
+  return request<HoldSeatsResponse>(`/api/bookings/shows/${showId}/seats/hold`, {
+    method: 'POST',
+    auth: true,
+    body: data,
+  });
 }
 
 // ─── Bookings ────────────────────────────────────────────────────────────────

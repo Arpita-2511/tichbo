@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Timer } from 'lucide-react';
-import { getSeatMap, getEventById, getShowById, getVenueById } from '../services/api';
+import { getSeatMap, getEventById, getShowById, getVenueById, holdSeats, ApiError } from '../services/api';
+import { useApp } from '../context/AppContext';
 import type { Content, Show, Venue, Seat, SeatSection } from '../types';
 import SeatMap from '../components/booking/SeatMap';
 import PriceBreakdown, { calculatePricing } from '../components/booking/PriceBreakdown';
@@ -11,6 +12,7 @@ export default function SeatSelection() {
   const { showId } = useParams<{ showId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useApp();
 
   // Prefer state passed from EventDetails, fall back to fetching
   const stateData = location.state as { event?: Content; show?: Show; venue?: Venue } | null;
@@ -21,8 +23,14 @@ export default function SeatSelection() {
   const [sections, setSections] = useState<SeatSection[]>([]);
   const [selectedSeats, setSelectedSeats] = useState<Seat[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timer, setTimer] = useState(600); // 10 min seat hold
+  // Visual countdown only. The real backend hold (POST .../seats/hold, see
+  // handleContinue) does not yet expire on its own — there is no Redis
+  // TTL/expiration on a HELD show-seat yet, so this timer does not
+  // currently cause, or correspond to, any real automatic release. It
+  // must not be treated as a guaranteed backend expiry until that lands.
+  const [timer, setTimer] = useState(600); // 10 min seat hold (display only, see comment above)
   const [continuing, setContinuing] = useState(false);
+  const [holdError, setHoldError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!showId) return;
@@ -62,18 +70,54 @@ export default function SeatSelection() {
 
   const handleContinue = async () => {
     if (!selectedSeats.length || !event || !show || !venue) return;
+    if (!showId) return;
+    if (!user) return; // not logged in — the route/header already gate this in practice
+
+    setHoldError(null);
     setContinuing(true);
-    const { ticketTotal, convenienceFee, total } = calculatePricing(selectedSeats);
-    // Pass booking details via location state (no URL params for sensitive data)
-    navigate(`/booking/new/summary`, {
-      state: {
-        event, show, venue,
-        seats: selectedSeats,
-        ticketPrice: ticketTotal,
-        convenienceFee,
-        totalAmount: total,
+    try {
+      const showSeatIds = selectedSeats.map(seat => seat.id);
+      await holdSeats(showId, { userId: user.id, showSeatIds });
+
+      // Only navigate once the backend has actually confirmed the hold.
+      const { ticketTotal, convenienceFee, total } = calculatePricing(selectedSeats);
+      // Pass booking details via location state (no URL params for sensitive data)
+      navigate(`/booking/new/summary`, {
+        state: {
+          event, show, venue,
+          seats: selectedSeats,
+          ticketPrice: ticketTotal,
+          convenienceFee,
+          totalAmount: total,
+        }
+      });
+    } catch (err) {
+      // 409 INVALID_SEAT_STATE means a selected seat stopped being
+      // AVAILABLE between the seat map loading and Continue being
+      // clicked — the backend's own message names the show-seat by id,
+      // which isn't something to show a customer, so it's replaced with
+      // a plain-language one. Any other ApiError's own message is already
+      // written to be user-safe (see ApiError's own contract in api.ts).
+      const message = err instanceof ApiError && err.code === 'INVALID_SEAT_STATE'
+        ? 'One or more selected seats are no longer available. Please select again.'
+        : err instanceof ApiError
+          ? err.message
+          : 'Could not hold your seats. Please try again.';
+      setHoldError(message);
+      setSelectedSeats([]);
+      // The failed hold means at least one seat's real availability has
+      // moved on from what's currently shown — refresh from the backend
+      // rather than leaving a stale map displayed.
+      try {
+        setSections(await getSeatMap(showId));
+      } catch {
+        // Best-effort refresh; the error banner above already tells the
+        // user what to do (select again) even if this particular refetch
+        // fails too.
       }
-    });
+    } finally {
+      setContinuing(false);
+    }
   };
 
   const formatTimer = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
@@ -109,6 +153,7 @@ export default function SeatSelection() {
           <div className="lg:col-span-2">
             <div className="bg-bg-secondary border border-border rounded-xl p-4 sm:p-6 overflow-x-auto">
               <h2 className="text-text-primary font-semibold mb-6 text-center">Select Your Seats</h2>
+              {holdError && <p className="text-error text-sm text-center mb-4">{holdError}</p>}
               <SeatMap
                 sections={sections}
                 selectedSeats={selectedSeats}
