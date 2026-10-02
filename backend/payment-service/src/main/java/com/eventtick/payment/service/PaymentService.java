@@ -53,17 +53,19 @@ import java.util.UUID;
  * was added, since that's a customer-facing feature decision beyond this
  * step's scope), and a real payment provider/webhook.
  *
- * <h2>Phase 16 Step 4 addition</h2>
- * A successful charge now also enqueues a {@code PaymentSucceeded} outbox
- * event, atomically with the {@code SUCCESS} status write — but that
- * atomic write happens in a separate bean, {@link PaymentSuccessRecorder},
- * not here, precisely because this class's own entry points must stay
- * un-{@code @Transactional} for the HTTP-spanning reasons above; see that
- * class's Javadoc. This is an addition, not a replacement: {@code
- * bookingSyncStatus}, {@link #recordSyncOutcome}, and every existing
- * payment→booking consistency mechanism above are unchanged. Kafka
- * remains a purely asynchronous side channel — see docs/architecture.md
- * §50.
+ * <h2>Phase 16 Step 4/5 additions</h2>
+ * A successful charge enqueues a {@code PaymentSucceeded} outbox event
+ * (Step 4); a failed charge enqueues {@code PaymentFailed}, and an
+ * expiring payment enqueues {@code PaymentExpired} (Step 5) — all three
+ * atomically with their respective status write, but that atomic write
+ * happens in a separate bean, {@link PaymentSuccessRecorder} (despite its
+ * name — see that class's own Javadoc for why all three live there), not
+ * here, precisely because this class's own entry points must stay
+ * un-{@code @Transactional} for the HTTP-spanning reasons above. This is
+ * an addition, not a replacement: {@code bookingSyncStatus}, {@link
+ * #recordSyncOutcome}, and every existing payment→booking consistency
+ * mechanism above are unchanged. Kafka remains a purely asynchronous side
+ * channel — see docs/architecture.md §50/§53.
  */
 @Service
 public class PaymentService {
@@ -224,7 +226,7 @@ public class PaymentService {
         } else {
             transitionTo(payment, PaymentStatus.FAILED);
             payment.setProviderReference(result.providerReference());
-            payment = paymentRepository.save(payment);
+            payment = paymentSuccessRecorder.recordFailure(payment, correlationId, result.failureReason());
             log.info("payment failed id={} booking={} reason={}", payment.getId(), payment.getBookingId(), result.failureReason());
             recordSyncOutcome(payment, bookingServiceClient.releaseBooking(payment.getBookingId()));
         }
@@ -280,7 +282,13 @@ public class PaymentService {
         List<Payment> candidates = paymentRepository.findByStatusAndCreatedAtBefore(PaymentStatus.PENDING, cutoff);
         int expiredCount = 0;
         for (Payment candidate : candidates) {
-            if (paymentRepository.expireIfStillPending(candidate.getId()) == 1) {
+            // Phase 16 Step 5: the conditional expiry itself and the
+            // PaymentExpired outbox row now commit atomically — see
+            // PaymentSuccessRecorder#recordExpiryIfStillPending. No
+            // originating request exists for this scheduled sweep, so
+            // correlationId is null; PaymentOutboxService#record's own
+            // documented fallback generates a fresh one.
+            if (paymentSuccessRecorder.recordExpiryIfStillPending(candidate, null)) {
                 expiredCount++;
                 log.info("payment expired id={} booking={} (pending since {})", candidate.getId(), candidate.getBookingId(), candidate.getCreatedAt());
                 recordSyncOutcome(candidate, bookingServiceClient.releaseBooking(candidate.getBookingId()));

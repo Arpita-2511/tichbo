@@ -1502,13 +1502,15 @@ a separate event-owning service.
 transactional outbox (`docs/architecture.md` §48.7) on every
 `POST /api/bookings`. `PaymentSucceeded` (Phase 16 Step 4), published by
 payment-service via its own transactional outbox (`docs/architecture.md`
-§50.2–§50.4) on every payment that reaches `SUCCESS`.
+§50.2–§50.4) on every payment that reaches `SUCCESS`. `PaymentFailed`
+and `PaymentExpired` (Phase 16 Step 5), published by payment-service via
+the same outbox on every payment that reaches `FAILED` (provider
+rejection) or `EXPIRED` (expiration sweep), respectively.
 
 Catalogued and classified as strong candidates, remaining
 **NOT IMPLEMENTED** (architecture.md §47.2): `BookingCancelled`,
-`BookingConfirmed` (booking-service); `PaymentCreated`, `PaymentFailed`,
-`PaymentExpired` (payment-service — explicitly out of scope for Phase 16
-Step 4, see FR-56's own note); `ShowCreated`, `ShowCancelled`
+`BookingConfirmed` (booking-service); `PaymentCreated`
+(payment-service); `ShowCreated`, `ShowCancelled`
 (catalog-service); `UserRegistered`, `UserRoleChanged` (user-service).
 Explicitly deferred, with reasoning, rather than assumed: `SeatHeld`/
 `SeatReleased` (holds have no recorded ownership yet — §16), `SeatBooked`
@@ -1586,17 +1588,21 @@ service's equivalent classes, not a shared module (same §49.1 reasoning).
 The `SUCCESS` status write and the outbox row commit atomically, in one
 database transaction, inside `PaymentSuccessRecorder#recordSuccess` — not
 inside `PaymentService` itself, which cannot safely carry
-`@Transactional` here (see architecture.md §50.4 for why). Live-proven
-(Step 16 of the kickoff / §50.8): a forced `NOT NULL` violation on the
-payment write rolls back the outbox row in the same transaction; a
-payment reaching `SUCCESS` while Kafka is unreachable leaves the outbox
-row `PENDING`, never blocks `SUCCESS`, and is published automatically
-once Kafka recovers.
+`@Transactional` here (see architecture.md §50.4 for why). Extended in
+Phase 16 Step 5: `recordFailure` and `recordExpiryIfStillPending` follow
+the same pattern — each writes the terminal status and its outbox row
+(`PaymentFailed` / `PaymentExpired`) atomically, inside
+`PaymentSuccessRecorder` for the same proxy-invocation reason.
+Live-proven (Step 16 of the kickoff / §50.8): a forced `NOT NULL`
+violation on the payment write rolls back the outbox row in the same
+transaction; a payment reaching `SUCCESS` while Kafka is unreachable
+leaves the outbox row `PENDING`, never blocks `SUCCESS`, and is published
+automatically once Kafka recovers.
 
-## FR-56: Payment Audit Consumer (`PaymentSucceeded` only) — IMPLEMENTED
+## FR-56: Payment Audit Consumer — IMPLEMENTED
 
 audit-service (not a new service) shall gain a second Kafka consumer, for
-`PaymentSucceeded` on `eventtick.payment`, under its own fixed, restart-
+payment events on `eventtick.payment`, under its own fixed, restart-
 stable, distinct consumer group — proving the event-driven chain extends
 to a second producer/consumer pair without duplicating infrastructure or
 conflating the two topics' independent consumption progress.
@@ -1611,8 +1617,13 @@ Kafka, and this consumer, with every field verified against the
 authoritative `payments` row via direct PostgreSQL queries; the same
 event redelivered produces exactly one row; the real audit-service
 process was killed and restarted mid-flow with no reprocessing and no
-interruption to normal consumption afterward. **Not implemented** (this
-step's explicit scope boundary): `PaymentFailed`, `PaymentExpired`,
+interruption to normal consumption afterward. Extended in Phase 16 Step 5:
+the same consumer now handles `PaymentFailed` and `PaymentExpired` in
+addition to `PaymentSucceeded` — one `@KafkaListener` dispatching by
+event type, not three competing listeners (same topic, same consumer
+group, same partition assignment). No schema migration needed:
+`payment_event_audit.event_type` already stores the type as a string
+column. **Not implemented** (remaining scope boundary):
 `BookingConfirmed`, `BookingCancelled`, any catalog/user event, and any
 DLQ — see architecture.md §50.9.
 

@@ -20,8 +20,10 @@ import java.util.UUID;
  *
  * <p><b>Every call site must be inside the same {@code @Transactional}
  * method as the state change the event describes.</b> For {@code
- * PaymentSucceeded} specifically, that call site is {@link
- * com.eventtick.payment.service.PaymentSuccessRecorder#recordSuccess} —
+ * PaymentSucceeded}/{@code PaymentFailed}/{@code PaymentExpired}
+ * (Phase 16 Steps 4/5), those call sites are
+ * {@link com.eventtick.payment.service.PaymentSuccessRecorder#recordSuccess}/
+ * {@code #recordFailure}/{@code #recordExpiryIfStillPending} respectively —
  * not {@code PaymentService} directly, since {@code PaymentService}'s own
  * entry points are deliberately not {@code @Transactional} (they span
  * outbound HTTP calls to booking-service/the payment provider — see that

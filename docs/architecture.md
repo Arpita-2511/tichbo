@@ -3531,10 +3531,12 @@ was implemented in Steps 2–4; see §25.1–§25.5 for its actual, current
 state.)*
 
 *(Updated, Phase 17 documentation sync.)* Phase 16 (Event-Driven
-Architecture / Kafka, §47–§50) is also complete through Step 4: real
+Architecture / Kafka, §47–§50) is also complete through Step 5: real
 transactional outboxes in both `booking-service` and `payment-service`,
-two live Kafka producers, and `audit-service` consuming both into its own
-read-only projections — see §50.9 for the precise implemented/not-
+three payment event types (`PaymentSucceeded`, `PaymentFailed`,
+`PaymentExpired`) and one booking event type (`BookingCreated`) live,
+and `audit-service` consuming all of them into its own read-only
+projections — see §50.9/§50.10 for the precise implemented/not-
 implemented boundary. Phase 17 (Frontend Integration, §51) is also
 complete: the frontend's catalog browsing, show selection, seat holds,
 booking creation, and payment now call real services through the Gateway
@@ -4168,16 +4170,14 @@ broker acknowledgement requirement, per-row retry with `attempts`/
 `X-Request-ID`-derived correlation ids; the four approved topics documented
 and provisionable (`kafka/README.md`).
 
-**Not yet implemented (as of Step 2):** `PaymentSucceeded`/`PaymentFailed`/
-`PaymentExpired` producers (payment-service has no outbox of its own yet,
-and `PaymentService`/`PaymentStatus`/`BookingSyncStatus`/
-`PaymentLifecycleScheduler`/`BookingServiceClient` were not touched by this
-step); `BookingConfirmed`/`BookingCancelled` producers (booking-service's
-own outbox mechanism could carry them next, but neither call site does
-yet); any catalog or user event; any consumer (Step 3, §49, adds the
-first); analytics; notifications; the ML pipeline (§47.10). The existing,
-synchronous payment/booking consistency mechanism (§25.3) is completely
-unmodified — `PaymentService` still commits `SUCCESS` first and calls
+**Not yet implemented (as of Step 2; see §50 for Step 4 and §50.10 for
+Step 5 which implement `PaymentSucceeded`/`PaymentFailed`/
+`PaymentExpired`):** `BookingConfirmed`/`BookingCancelled` producers
+(booking-service's own outbox mechanism could carry them next, but
+neither call site does yet); any catalog or user event; analytics;
+notifications; the ML pipeline (§47.10). The existing, synchronous
+payment/booking consistency mechanism (§25.3) is completely unmodified —
+`PaymentService` still commits `SUCCESS` first and calls
 booking-service's internal confirm endpoint synchronously;
 `booking_sync_status` remains the only mechanism that retries that call.
 Kafka plays no role in that path.
@@ -4406,14 +4406,15 @@ consumption enforced at the database level, manual commit-after-persist
 acknowledgement, and indefinite retry on genuine failure; a fixed,
 restart-stable consumer group.
 
-**Not yet implemented:** consumption of `PaymentSucceeded`/`PaymentFailed`/
-`PaymentExpired`, `BookingConfirmed`/`BookingCancelled`, or any catalog/user
-event (none of those producers exist yet either — §48.9); a DLQ of any
-kind; analytics; notifications; the ML pipeline (§47.10). The payment/
-booking synchronous consistency mechanism (§25.3) remains completely
-unmodified and untouched by this step — `PaymentService`, `PaymentStatus`,
-`BookingSyncStatus`, `PaymentLifecycleScheduler`, and `BookingServiceClient`
-were not changed; Kafka still plays no role in that path.
+**Not yet implemented (as of Step 3; see §50.7 and §50.10.3 for Steps 4
+and 5 which add `PaymentSucceeded`/`PaymentFailed`/`PaymentExpired`
+consumption):** consumption of `BookingConfirmed`/`BookingCancelled`, or
+any catalog/user event; a DLQ of any kind; analytics; notifications; the
+ML pipeline (§47.10). The payment/booking synchronous consistency
+mechanism (§25.3) remains completely unmodified and untouched by this
+step — `PaymentService`, `PaymentStatus`, `BookingSyncStatus`,
+`PaymentLifecycleScheduler`, and `BookingServiceClient` were not changed;
+Kafka still plays no role in that path.
 
 # 50. `PaymentSucceeded` Event + Payment Audit Consumption (Phase 16 Step 4)
 
@@ -4643,10 +4644,12 @@ reprocessed). A payment created after the restart was consumed normally.
 **Failure path unaffected (kickoff Step 15).** A payment forced to
 `FAILED` (`MockPaymentProvider`'s `FORCE_FAIL_` test key) still produced
 `bookings.status=CANCELLED` and `show_seats.status=AVAILABLE` exactly as
-before this step, with **zero** rows in either `payment_outbox_events` or
-`payment_event_audit` for that payment — `PaymentSucceeded` is never
-published for a non-`SUCCESS` outcome, confirmed directly, not just by
-code inspection.
+before this step, with **zero** `PaymentSucceeded` rows in either
+`payment_outbox_events` or `payment_event_audit` for that payment —
+`PaymentSucceeded` is never published for a non-`SUCCESS` outcome,
+confirmed directly, not just by code inspection. (As of Step 5, a
+`FAILED` payment now correctly produces a `PaymentFailed` event —
+see §50.10.)
 
 ## 50.9 What is, and is not, implemented
 
@@ -4659,12 +4662,11 @@ transition via `PaymentSuccessRecorder`; a second audit-service consumer
 (`payment_event_audit`); correlation id propagation from
 `X-Request-ID` through to the consumed projection; database-level
 idempotent consumption; Kafka-unavailability proven, live, to never
-affect payment `SUCCESS`.
+affect payment `SUCCESS`. Extended in §50.10 (Step 5):
+`PaymentFailed` and `PaymentExpired` are now published and consumed.
 
-**Not implemented (explicitly out of scope for this step):**
-`PaymentFailed`, `PaymentExpired` (payment-service publishes neither —
-§50.9's own live check confirms a `FAILED` payment produces no event at
-all, not merely "not yet consumed"); `BookingConfirmed`/`BookingCancelled`;
+**Not implemented (remaining scope boundary after Step 5):**
+`BookingConfirmed`/`BookingCancelled`;
 any catalog/user event; a DLQ of any kind; notifications; analytics; the
 ML pipeline. The payment/booking synchronous consistency mechanism
 (§25.3) remains completely unmodified — `PaymentStatus`,
@@ -4673,6 +4675,86 @@ ML pipeline. The payment/booking synchronous consistency mechanism
 the sole authoritative confirm/cancel-acknowledgement mechanism, with
 `PaymentSucceeded` existing purely as an independent, best-effort,
 asynchronous broadcast alongside it (FR-52).
+
+## 50.10 `PaymentFailed` and `PaymentExpired` Events (Phase 16 Step 5)
+
+Extends the payment outbox proven in §50.1–§50.8 to the remaining two
+terminal payment outcomes: `FAILED` (provider rejection) and `EXPIRED`
+(expiration sweep). Same transactional-outbox pattern, same consumer,
+same audit projection — no new tables, topics, consumer groups, or
+services.
+
+### 50.10.1 Event payloads
+
+`PaymentFailedPayload`: `paymentId`, `bookingId`, `userId`, `amount`,
+`currency`, `providerReference` (nullable — matches provider result),
+`failureReason`. `PaymentExpiredPayload`: `paymentId`, `bookingId`,
+`userId`, `amount`, `currency` — no `providerReference` (a payment that
+expires never resolved with a provider) and no `failureReason` (the
+reason is implicit in the event type).
+
+### 50.10.2 Producer-side atomicity
+
+`PaymentSuccessRecorder` (§50.4's separate-bean solution to the proxy
+self-invocation problem) extended with two new `@Transactional` methods:
+
+- `recordFailure(payment, correlationId, failureReason)`: saves the
+  `FAILED` payment status + a `PaymentFailed` outbox row atomically.
+  Called from `PaymentService.chargeAndResolve`'s failure branch, which
+  previously called `paymentRepository.save(payment)` directly.
+- `recordExpiryIfStillPending(candidate, correlationId)`: calls the
+  repository's conditional `expireIfStillPending` UPDATE; only if the
+  conditional update actually transitions the row (returns 1), writes a
+  `PaymentExpired` outbox row. Returns boolean so the caller
+  (`expirePendingPayments`) knows whether the expiry won the race.
+
+Both follow `recordSuccess`'s exact same pattern: status write + outbox
+row in one DB transaction, no Kafka dependency, the outbox row stays
+`PENDING` until the poller publishes it.
+
+### 50.10.3 Consumer-side: one listener, three event types
+
+`PaymentSucceededConsumer` (§50.7) now handles `PaymentSucceeded`,
+`PaymentFailed`, and `PaymentExpired` — dispatching by event type inside
+one `@KafkaListener`, not three competing listeners. All three are
+produced to `eventtick.payment` (the single payment topic); a second or
+third `@KafkaListener` on the same topic with the same `groupId` would
+compete for the same partitions rather than add coverage. The required
+fields and the `persist(...)` call are identical across all three types.
+No schema migration needed: `payment_event_audit.event_type` already
+stores the type as a string column.
+
+### 50.10.4 Producer-side duplication safety (extended)
+
+`PaymentStatus.FAILED` and `PaymentStatus.EXPIRED` are both terminal
+with no outgoing transitions — the same structural guarantee as
+`SUCCESS` (§50.6). `recordFailure` is called from exactly one branch in
+`chargeAndResolve`; `recordExpiryIfStillPending` uses a conditional
+`UPDATE ... WHERE status = 'PENDING'` that wins at most once per payment.
+A replayed `createPayment` call short-circuits before reaching either.
+Repeated expiration sweeps produce zero additional outbox rows for
+already-expired payments.
+
+### 50.10.5 Test coverage
+
+**payment-service:** `PaymentServiceTest` (25 tests) — 2 new tests for
+the FAILED→`recordFailure` wiring and the absence of `recordFailure` on
+success. `PaymentSuccessRecorderTest` (16 tests) — ~10 new tests covering
+`recordFailure` (outbox row type, payment save, payload fields, null
+providerReference, atomic rollback) and `recordExpiryIfStillPending`
+(expiry+outbox, payload fields, blank correlationId, already-resolved
+race, idempotent double-call). `PaymentExpirationTest` (9 tests) — 2 new
+end-to-end tests (sweep→outbox row, repeated sweeps→single event).
+`PaymentOutboxIntegrationTest` (4 tests) — 1 new test for the FAILED
+outbox path end to end.
+
+**audit-service:** `PaymentSucceededConsumerTest` (14 tests) — 4 new
+tests for PaymentFailed persistence/ack, PaymentExpired persistence/ack
+with null providerReference, and duplicate handling for both.
+`PaymentSucceededConsumerEmbeddedKafkaTest` (8 tests) — 3 new tests:
+PaymentFailed consumed+persisted end to end, PaymentExpired consumed+
+persisted with null providerReference, and duplicate PaymentFailed
+delivery produces exactly one row.
 
 ---
 

@@ -182,6 +182,76 @@ class PaymentSucceededConsumerTest {
         verify(ack, never()).acknowledge();
     }
 
+    // ---- Phase 16 Step 5: PaymentFailed and PaymentExpired ----
+
+    @Test
+    void onMessage_validPaymentFailed_persistsAndAcknowledges() {
+        UUID eventId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        when(auditService.persist(eq(eventId), eq("PaymentFailed"), eq(paymentId), eq(bookingId), eq(userId),
+                any(BigDecimal.class), eq("INR"), eq("ref-1"), any(Instant.class), eq("corr-f")))
+                .thenReturn(PersistOutcome.PERSISTED);
+
+        consumer.onMessage(envelope("PaymentFailed", eventId, paymentId, bookingId, userId, "corr-f"), ack);
+
+        verify(auditService).persist(eq(eventId), eq("PaymentFailed"), eq(paymentId), eq(bookingId), eq(userId),
+                any(BigDecimal.class), eq("INR"), eq("ref-1"), any(Instant.class), eq("corr-f"));
+        verify(ack).acknowledge();
+    }
+
+    @Test
+    void onMessage_validPaymentExpired_persistsAndAcknowledges_withNullProviderReference() {
+        UUID eventId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        String json = """
+                {"eventId":"%s","eventType":"PaymentExpired","eventVersion":1,"occurredAt":"2026-09-28T10:00:00Z",
+                 "producer":"payment-service","aggregateType":"Payment","aggregateId":"%s",
+                 "correlationId":"corr-e","causationId":null,
+                 "payload":{"paymentId":"%s","bookingId":"%s","userId":"%s","amount":500.00,"currency":"INR"}}
+                """.formatted(eventId, paymentId, paymentId, bookingId, userId);
+        when(auditService.persist(eq(eventId), eq("PaymentExpired"), eq(paymentId), eq(bookingId), eq(userId),
+                any(BigDecimal.class), eq("INR"), isNull(), any(Instant.class), eq("corr-e")))
+                .thenReturn(PersistOutcome.PERSISTED);
+
+        consumer.onMessage(json, ack);
+
+        verify(auditService).persist(eq(eventId), eq("PaymentExpired"), eq(paymentId), eq(bookingId), eq(userId),
+                any(BigDecimal.class), eq("INR"), isNull(), any(Instant.class), eq("corr-e"));
+        verify(ack).acknowledge();
+    }
+
+    @Test
+    void onMessage_duplicatePaymentFailed_stillAcknowledges() {
+        when(auditService.persist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(PersistOutcome.DUPLICATE);
+
+        consumer.onMessage(envelope("PaymentFailed", UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID(), "corr-dup-f"), ack);
+
+        verify(ack).acknowledge();
+    }
+
+    @Test
+    void onMessage_duplicatePaymentExpired_stillAcknowledges() {
+        when(auditService.persist(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(PersistOutcome.DUPLICATE);
+
+        String json = """
+                {"eventId":"%s","eventType":"PaymentExpired","eventVersion":1,"occurredAt":"2026-09-28T10:00:00Z",
+                 "producer":"payment-service","aggregateType":"Payment","aggregateId":"%s",
+                 "correlationId":"corr-dup-e","causationId":null,
+                 "payload":{"paymentId":"%s","bookingId":"%s","userId":"%s","amount":500.00,"currency":"INR"}}
+                """.formatted(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+
+        consumer.onMessage(json, ack);
+
+        verify(ack).acknowledge();
+    }
+
     @Test
     void onMessage_multipleValidEvents_eachPersistedAndAcknowledgedOnce() {
         for (int i = 0; i < 3; i++) {

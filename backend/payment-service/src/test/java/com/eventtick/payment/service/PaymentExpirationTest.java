@@ -4,6 +4,9 @@ import com.eventtick.payment.client.BookingServiceClient;
 import com.eventtick.payment.entity.BookingSyncStatus;
 import com.eventtick.payment.entity.Payment;
 import com.eventtick.payment.entity.PaymentStatus;
+import com.eventtick.payment.outbox.OutboxEventStatus;
+import com.eventtick.payment.outbox.PaymentOutboxEvent;
+import com.eventtick.payment.outbox.PaymentOutboxEventRepository;
 import com.eventtick.payment.repository.PaymentRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +19,7 @@ import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,6 +59,9 @@ class PaymentExpirationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private PaymentOutboxEventRepository outboxRepository;
+
     @MockBean
     private BookingServiceClient bookingServiceClient;
 
@@ -71,6 +78,7 @@ class PaymentExpirationTest {
      */
     @AfterEach
     void cleanUp() {
+        outboxRepository.deleteAll();
         paymentRepository.deleteAll();
     }
 
@@ -191,5 +199,44 @@ class PaymentExpirationTest {
         Payment reloaded = paymentRepository.findById(saved.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(PaymentStatus.EXPIRED);
         assertThat(reloaded.getBookingSyncStatus()).isEqualTo(BookingSyncStatus.PENDING);
+    }
+
+    // ---- Phase 16 Step 5: the sweep now also records a PaymentExpired event, end to end ----
+
+    @Test
+    void expirePendingPayments_endToEnd_alsoRecordsAPendingPaymentExpiredOutboxRow() {
+        // Proves the wiring between PaymentService#expirePendingPayments
+        // and PaymentSuccessRecorder#recordExpiryIfStillPending, not just
+        // the recorder in isolation (that's PaymentSuccessRecorderTest's
+        // job) — this test calls the real public sweep entry point exactly
+        // as PaymentLifecycleScheduler does.
+        Payment saved = paymentRepository.saveAndFlush(payment(PaymentStatus.PENDING));
+        backdate(saved.getId(), Instant.now().minus(20, ChronoUnit.MINUTES));
+        when(bookingServiceClient.releaseBooking(any())).thenReturn(true);
+
+        paymentService.expirePendingPayments();
+
+        List<PaymentOutboxEvent> rows = outboxRepository.findAll().stream()
+                .filter(r -> r.getAggregateId().equals(saved.getId()))
+                .toList();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getEventType()).isEqualTo("PaymentExpired");
+        assertThat(rows.get(0).getStatus()).isEqualTo(OutboxEventStatus.PENDING);
+    }
+
+    @Test
+    void expirePendingPayments_repeatedSweeps_neverEnqueueASecondEventForTheSamePayment() {
+        Payment saved = paymentRepository.saveAndFlush(payment(PaymentStatus.PENDING));
+        backdate(saved.getId(), Instant.now().minus(45, ChronoUnit.MINUTES));
+        when(bookingServiceClient.releaseBooking(any())).thenReturn(true);
+
+        paymentService.expirePendingPayments();
+        paymentService.expirePendingPayments();
+        paymentService.expirePendingPayments();
+
+        long rowCount = outboxRepository.findAll().stream()
+                .filter(r -> r.getAggregateId().equals(saved.getId()))
+                .count();
+        assertThat(rowCount).isEqualTo(1);
     }
 }

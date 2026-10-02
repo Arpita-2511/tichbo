@@ -66,11 +66,13 @@ class PaymentServiceTest {
     void setUp() {
         paymentService = new PaymentService(paymentRepository, bookingServiceClient, paymentProvider,
                 paymentSuccessRecorder, "INR", 15L);
-        // Mirrors PaymentSuccessRecorder#recordSuccess's own contract
-        // (save-and-return) without a real transaction/outbox write — this
-        // is a plain Mockito unit test of PaymentService's own branching,
-        // not of PaymentSuccessRecorder itself (see PaymentSuccessRecorderTest).
+        // Mirrors PaymentSuccessRecorder#recordSuccess/#recordFailure's own
+        // contract (save-and-return) without a real transaction/outbox
+        // write — this is a plain Mockito unit test of PaymentService's
+        // own branching, not of PaymentSuccessRecorder itself (see
+        // PaymentSuccessRecorderTest).
         lenient().when(paymentSuccessRecorder.recordSuccess(any(), any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(paymentSuccessRecorder.recordFailure(any(), any(), any())).thenAnswer(inv -> inv.getArgument(0));
     }
 
     private static BookingSummary pendingBooking() {
@@ -159,6 +161,48 @@ class PaymentServiceTest {
         assertThat(result.payment().getStatus()).isEqualTo(PaymentStatus.FAILED);
         verify(bookingServiceClient).releaseBooking(BOOKING_ID);
         verify(bookingServiceClient, never()).confirmBooking(any());
+    }
+
+    // ---- Phase 16 Step 5: PaymentFailed is recorded through the same atomic recorder as PaymentSucceeded ----
+
+    @Test
+    void createPayment_providerFails_recordsThePaymentFailedEvent_withTheProvidersFailureReason() {
+        when(paymentRepository.findByIdempotencyKey(IDEMPOTENCY_KEY)).thenReturn(Optional.empty());
+        when(bookingServiceClient.getBooking(BOOKING_ID)).thenReturn(pendingBooking());
+        when(paymentRepository.findLiveByBookingId(eq(BOOKING_ID), anyList())).thenReturn(Optional.empty());
+        when(paymentRepository.saveAndFlush(any())).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            ReflectionTestUtils.setField(p, "id", UUID.randomUUID());
+            return p;
+        });
+        // The PENDING transition (chargeAndResolve's first step, before the
+        // provider is ever called) still goes through the plain repository
+        // save — only the terminal FAILED write moved to the recorder.
+        when(paymentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(paymentProvider.charge(any())).thenReturn(PaymentProviderResult.failure("decline-ref", "card declined"));
+
+        PaymentService.PaymentCreationResult result = paymentService.createPayment(CALLER, BOOKING_ID, IDEMPOTENCY_KEY, "corr-test");
+
+        verify(paymentSuccessRecorder).recordFailure(any(), eq("corr-test"), eq("card declined"));
+        assertThat(result.payment().getProviderReference()).isEqualTo("decline-ref");
+    }
+
+    @Test
+    void createPayment_providerSucceeds_neverCallsRecordFailure() {
+        when(paymentRepository.findByIdempotencyKey(IDEMPOTENCY_KEY)).thenReturn(Optional.empty());
+        when(bookingServiceClient.getBooking(BOOKING_ID)).thenReturn(pendingBooking());
+        when(paymentRepository.findLiveByBookingId(eq(BOOKING_ID), anyList())).thenReturn(Optional.empty());
+        when(paymentRepository.saveAndFlush(any())).thenAnswer(inv -> {
+            Payment p = inv.getArgument(0);
+            ReflectionTestUtils.setField(p, "id", UUID.randomUUID());
+            return p;
+        });
+        when(paymentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(paymentProvider.charge(any())).thenReturn(PaymentProviderResult.success("ref"));
+
+        paymentService.createPayment(CALLER, BOOKING_ID, IDEMPOTENCY_KEY, "corr-test");
+
+        verify(paymentSuccessRecorder, never()).recordFailure(any(), any(), any());
     }
 
     // ---- idempotency: replay ----

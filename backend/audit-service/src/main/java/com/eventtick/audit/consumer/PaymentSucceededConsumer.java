@@ -14,16 +14,36 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Consumes {@code eventtick.payment}, processing {@code PaymentSucceeded}
- * and nothing else (Phase 16 Step 4, docs/architecture.md §50) — the
- * second Kafka consumer in this service, added alongside {@link
- * BookingCreatedConsumer} rather than in a new service (this step's own
- * instruction). Same raw-{@link JsonNode}-tree parsing choice and the same
- * reasons: no dependency on payment-service's own classes, no shared
- * Maven module, resilient to a future {@code eventVersion} change.
+ * (Phase 16 Step 4) and, as of Step 5, {@code PaymentFailed}/
+ * {@code PaymentExpired} — the second Kafka consumer in this service,
+ * added alongside {@link BookingCreatedConsumer} rather than in a new
+ * service (Step 4's own instruction). Same raw-{@link JsonNode}-tree
+ * parsing choice and the same reasons: no dependency on payment-service's
+ * own classes, no shared Maven module, resilient to a future {@code
+ * eventVersion} change.
+ *
+ * <p><b>One listener for all three event types, not three listeners.</b>
+ * All three are produced to this same topic (payment-service's own single
+ * outbox/topic design, docs/architecture.md §53) under the same consumer
+ * group — a second or third {@code @KafkaListener} on {@code
+ * eventtick.payment} with the same {@code groupId} would compete for the
+ * same partitions rather than genuinely add coverage (Kafka partition
+ * assignment is scoped per group, not per listener method), which is
+ * exactly the "duplicated consumer logic" Step 5's own instructions ruled
+ * out. Dispatch between the three is therefore a plain type check inside
+ * this one method, not three competing subscriptions. {@code
+ * PaymentFailed}/{@code PaymentExpired} reuse the exact same required-
+ * field set and the exact same {@link PaymentEventAuditService#persist}
+ * call as {@code PaymentSucceeded} — {@code failureReason} ({@code
+ * PaymentFailed}-only) and the absence of {@code providerReference}
+ * ({@code PaymentExpired}) are payload details this consumer doesn't need
+ * to read: {@code payment_event_audit} (§50's existing schema) already
+ * represents all three correctly without a migration.
  *
  * <h2>Same three outcomes as {@link BookingCreatedConsumer}, one rule each</h2>
  * <ul>
@@ -49,7 +69,7 @@ import java.util.UUID;
 public class PaymentSucceededConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentSucceededConsumer.class);
-    private static final String HANDLED_EVENT_TYPE = "PaymentSucceeded";
+    private static final Set<String> HANDLED_EVENT_TYPES = Set.of("PaymentSucceeded", "PaymentFailed", "PaymentExpired");
 
     private final PaymentEventAuditService auditService;
     private final ObjectMapper objectMapper;
@@ -93,9 +113,9 @@ public class PaymentSucceededConsumer {
         }
 
         String eventType = textOrNull(envelope, "eventType");
-        if (!HANDLED_EVENT_TYPE.equals(eventType)) {
+        if (!HANDLED_EVENT_TYPES.contains(eventType)) {
             log.info("ignoring event of type '{}' on eventtick.payment — this consumer only handles {}",
-                    eventType, HANDLED_EVENT_TYPE);
+                    eventType, HANDLED_EVENT_TYPES);
             ack.acknowledge();
             return;
         }
@@ -109,15 +129,17 @@ public class PaymentSucceededConsumer {
         UUID userId = payload == null ? null : uuidOrNull(payload, "userId");
         BigDecimal amount = payload == null ? null : decimalOrNull(payload, "amount");
         String currency = payload == null ? null : textOrNull(payload, "currency");
-        // providerReference is intentionally not required — see the
-        // payload's own Javadoc; nullable in the projection too.
+        // providerReference is intentionally not required for any of the
+        // three types — always absent on PaymentExpired (see that
+        // payload's own Javadoc), nullable on the other two; nullable in
+        // the projection too.
         String providerReference = payload == null ? null : textOrNull(payload, "providerReference");
 
         if (eventId == null || occurredAt == null || correlationId == null
                 || paymentId == null || bookingId == null || userId == null
                 || amount == null || currency == null) {
-            log.warn("PaymentSucceeded event is missing a required field — skipping, will not be retried: {}",
-                    rawEnvelope);
+            log.warn("{} event is missing a required field — skipping, will not be retried: {}",
+                    eventType, rawEnvelope);
             ack.acknowledge();
             return;
         }
@@ -125,8 +147,8 @@ public class PaymentSucceededConsumer {
         PersistOutcome outcome = auditService.persist(eventId, eventType, paymentId, bookingId, userId,
                 amount, currency, providerReference, occurredAt, correlationId);
         if (outcome == PersistOutcome.PERSISTED) {
-            log.info("recorded PaymentSucceeded audit: eventId={} paymentId={} bookingId={} correlationId={}",
-                    eventId, paymentId, bookingId, correlationId);
+            log.info("recorded {} audit: eventId={} paymentId={} bookingId={} correlationId={}",
+                    eventType, eventId, paymentId, bookingId, correlationId);
         }
         ack.acknowledge();
     }

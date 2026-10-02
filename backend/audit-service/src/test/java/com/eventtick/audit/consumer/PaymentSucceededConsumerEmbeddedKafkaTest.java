@@ -170,6 +170,96 @@ class PaymentSucceededConsumerEmbeddedKafkaTest {
         assertThat(row.getPaymentId()).isEqualTo(afterPaymentId);
     }
 
+    // ---- Phase 16 Step 5: PaymentFailed and PaymentExpired via real Kafka ----
+
+    private static String realPaymentFailedEnvelope(UUID eventId, UUID paymentId, UUID bookingId, UUID userId,
+                                                       String correlationId) {
+        return """
+                {"eventId":"%s","eventType":"PaymentFailed","eventVersion":1,"occurredAt":"2026-09-28T10:20:00Z",
+                 "producer":"payment-service","aggregateType":"Payment","aggregateId":"%s",
+                 "correlationId":"%s","causationId":null,
+                 "payload":{"paymentId":"%s","bookingId":"%s","userId":"%s","amount":750.00,
+                 "currency":"INR","providerReference":"FORCE_FAIL_ref","failureReason":"card declined"}}
+                """.formatted(eventId, paymentId, correlationId, paymentId, bookingId, userId);
+    }
+
+    private static String realPaymentExpiredEnvelope(UUID eventId, UUID paymentId, UUID bookingId, UUID userId,
+                                                        String correlationId) {
+        return """
+                {"eventId":"%s","eventType":"PaymentExpired","eventVersion":1,"occurredAt":"2026-09-28T10:25:00Z",
+                 "producer":"payment-service","aggregateType":"Payment","aggregateId":"%s",
+                 "correlationId":"%s","causationId":null,
+                 "payload":{"paymentId":"%s","bookingId":"%s","userId":"%s","amount":300.00,"currency":"INR"}}
+                """.formatted(eventId, paymentId, correlationId, paymentId, bookingId, userId);
+    }
+
+    @Test
+    void aRealPaymentFailedEnvelope_isConsumedAndPersistedCorrectly() throws Exception {
+        UUID eventId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        KafkaTemplate<String, String> kafka = producer();
+        kafka.send(new ProducerRecord<>(EventTopics.PAYMENT, paymentId.toString(),
+                realPaymentFailedEnvelope(eventId, paymentId, bookingId, userId, "corr-fail-1"))).get();
+
+        PaymentEventAudit row = awaitRow(eventId);
+
+        assertThat(row.getEventType()).isEqualTo("PaymentFailed");
+        assertThat(row.getPaymentId()).isEqualTo(paymentId);
+        assertThat(row.getBookingId()).isEqualTo(bookingId);
+        assertThat(row.getUserId()).isEqualTo(userId);
+        assertThat(row.getAmount()).isEqualByComparingTo("750.00");
+        assertThat(row.getCurrency()).isEqualTo("INR");
+        assertThat(row.getProviderReference()).isEqualTo("FORCE_FAIL_ref");
+        assertThat(row.getCorrelationId()).isEqualTo("corr-fail-1");
+        assertThat(row.getOccurredAt()).isEqualTo(Instant.parse("2026-09-28T10:20:00Z"));
+        assertThat(row.getProcessedAt()).isNotNull();
+    }
+
+    @Test
+    void aRealPaymentExpiredEnvelope_isConsumedAndPersistedCorrectly_withNullProviderReference() throws Exception {
+        UUID eventId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        KafkaTemplate<String, String> kafka = producer();
+        kafka.send(new ProducerRecord<>(EventTopics.PAYMENT, paymentId.toString(),
+                realPaymentExpiredEnvelope(eventId, paymentId, bookingId, userId, "corr-exp-1"))).get();
+
+        PaymentEventAudit row = awaitRow(eventId);
+
+        assertThat(row.getEventType()).isEqualTo("PaymentExpired");
+        assertThat(row.getPaymentId()).isEqualTo(paymentId);
+        assertThat(row.getBookingId()).isEqualTo(bookingId);
+        assertThat(row.getUserId()).isEqualTo(userId);
+        assertThat(row.getAmount()).isEqualByComparingTo("300.00");
+        assertThat(row.getCurrency()).isEqualTo("INR");
+        assertThat(row.getProviderReference()).isNull();
+        assertThat(row.getCorrelationId()).isEqualTo("corr-exp-1");
+        assertThat(row.getOccurredAt()).isEqualTo(Instant.parse("2026-09-28T10:25:00Z"));
+        assertThat(row.getProcessedAt()).isNotNull();
+    }
+
+    @Test
+    void duplicateDelivery_ofPaymentFailed_producesExactlyOneRow() throws Exception {
+        UUID eventId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        String envelope = realPaymentFailedEnvelope(eventId, paymentId, UUID.randomUUID(), UUID.randomUUID(), "corr-dup-f");
+
+        KafkaTemplate<String, String> kafka = producer();
+        kafka.send(new ProducerRecord<>(EventTopics.PAYMENT, paymentId.toString(), envelope)).get();
+        awaitRow(eventId);
+
+        kafka.send(new ProducerRecord<>(EventTopics.PAYMENT, paymentId.toString(), envelope)).get();
+        Thread.sleep(3000);
+
+        long matchingRows = auditRepository.findAll().stream()
+                .filter(r -> r.getEventId().equals(eventId))
+                .count();
+        assertThat(matchingRows).isEqualTo(1);
+    }
+
     @Test
     void unknownEventType_isNeverPersisted() throws Exception {
         UUID eventId = UUID.randomUUID();

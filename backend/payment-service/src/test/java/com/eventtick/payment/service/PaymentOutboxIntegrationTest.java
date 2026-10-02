@@ -124,6 +124,26 @@ class PaymentOutboxIntegrationTest {
         assertThat(outboxRepository.findAll()).hasSize(1);
     }
 
+    // ---- Phase 16 Step 5: FAILED path also creates an outbox event ----
+
+    @Test
+    void createPayment_providerFails_reachesFailedAndCreatesPaymentFailedOutboxRow() {
+        UUID bookingId = UUID.randomUUID();
+        UUID callerId = UUID.randomUUID();
+        when(bookingServiceClient.getBooking(bookingId))
+                .thenReturn(new BookingSummary(bookingId, callerId, "PENDING", new BigDecimal("500.00")));
+
+        PaymentService.PaymentCreationResult result = paymentService.createPayment(
+                callerId, bookingId, "FORCE_FAIL_outbox-" + UUID.randomUUID(), "corr-fail-outbox");
+
+        assertThat(result.payment().getStatus()).isEqualTo(PaymentStatus.FAILED);
+
+        List<PaymentOutboxEvent> rows = outboxRowsFor(result.payment().getId());
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getEventType()).isEqualTo("PaymentFailed");
+        assertThat(rows.get(0).getStatus()).isEqualTo(OutboxEventStatus.PENDING);
+    }
+
     @Test
     void reconciliation_afterASuccessfulPayment_doesNotEnqueueASecondEvent() {
         UUID bookingId = UUID.randomUUID();
