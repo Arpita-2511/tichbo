@@ -51,38 +51,52 @@ The application layer provides realistic traffic and business operations for the
                               │ Observability      │
                               └─────────┬─────────┘
                                         │
-                     ┌──────────────────┼──────────────────┐
-                     │                  │                  │
-                     ▼                  ▼                  ▼
-              ┌────────────┐     ┌────────────┐     ┌────────────┐
-              │   User     │     │  Catalog   │     │  Booking   │
-              │  Service   │     │  Service   │     │  Service   │
-              └─────┬──────┘     └─────┬──────┘     └─────┬──────┘
-                    │                  │                  │
-                    ▼                  ▼                  ▼
-              User Data          Catalog Data        Booking Data
-                    │                  │                  │
-                    └──────────────────┼──────────────────┘
-                                       │
-                                ┌──────┴──────┐
-                                │ PostgreSQL  │
-                                │             │
-                                │ Persistent  │
-                                │ Data        │
-                                └─────────────┘
-
-                                       ▲
-                                       │
-                                ┌──────┴──────┐
-                                │    Redis    │
-                                │             │
-                                │ Rate Limit  │
-                                │ Seat Holds  │
-                                │ Cache        │
-                                └─────────────┘
+           ┌───────────┬───────────────┼───────────────┬───────────┐
+           │           │               │               │           │
+           ▼           ▼               ▼               ▼           ▼
+     ┌──────────┐ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐
+     │   User   │ │ Catalog  │  │ Booking  │  │ Payment  │  │   Audit   │
+     │ Service  │ │ Service  │  │ Service  │  │ Service  │  │  Service  │
+     └────┬─────┘ └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬─────┘
+          │            │             │             │              │
+          └────────────┴──────┬──────┴──────┬──────┘              │
+                               │             │                     │
+                        ┌──────┴──────┐      │          (Kafka, consumer only)
+                        │ PostgreSQL  │      │                     │
+                        │ (shared     │      │                     │
+                        │ instance,   │      │                     │
+                        │ per-service │      │                     │
+                        │ ownership)  │      │                     │
+                        └─────────────┘      │                     │
+                                              ▼                     │
+                                       ┌─────────────┐              │
+                                       │    Redis    │              │
+                                       │ Rate Limit  │              │
+                                       │ state only  │              │
+                                       └─────────────┘              │
+                                                                     │
+                                       ┌─────────────┐              │
+                                       │    Kafka    │◄─────────────┘
+                                       │ (booking +  │
+                                       │  payment    │
+                                       │  outboxes)  │
+                                       └─────────────┘
 ```
 
-Additional components such as Payment Service, Notification Service, Kafka, Prometheus, Grafana, and an ML Service can be introduced progressively.
+**As actually implemented** (see §44, §51): six services, not three —
+`gateway-service` (8080), `user-service` (8081), `catalog-service` (8082),
+`booking-service` (8083), `payment-service` (8084), and `audit-service`
+(8085, Kafka-consumer-only — no Gateway route, no synchronous callers).
+Redis is used **only** for Gateway rate-limit state — not for seat holds
+(§16) or any other cache; "Seat Holds" in an earlier revision of this
+diagram described a design that was never built this way. Kafka carries
+two producers (`booking-service`'s `BookingCreated`, `payment-service`'s
+`PaymentSucceeded`) into `audit-service`'s two consumers — an audit/
+observability side-channel, not on the path of any synchronous request
+(§28, §47–§50). Prometheus/Grafana exist as a locally-run, manually-started
+monitoring stack (§46) — present and locally verified, not a continuously
+running production deployment. No Notification Service and no ML Service
+exist in any form.
 
 ---
 
@@ -772,6 +786,19 @@ The final implementation will determine the exact locking strategy, such as:
 * Transaction isolation
 * Atomic state transitions
 
+**Implemented:** database row locking. Every `show_seats` status
+transition (`holdSeats`, `releaseHold`, and the seat transitions inside
+`confirmBooking`/`cancelBooking`) goes through `BookingService`'s
+`lockShowSeats`, which uses `ShowSeatRepository.lockAllByIdIn` — a
+`SELECT ... FOR UPDATE` row lock (`LockModeType.PESSIMISTIC_WRITE`) inside
+an `@Transactional` method. This is what actually prevents two concurrent
+requests from both claiming the same seat: the second request's lock
+acquisition blocks until the first transaction commits, so it re-reads
+post-commit status rather than racing on stale data. Confirmed directly
+from `BookingService`'s own documentation of this mechanism. No unique
+constraint or additional atomic-transition mechanism was needed on top of
+this.
+
 ---
 
 # 16. Seat Hold Architecture
@@ -806,6 +833,33 @@ Redis is responsible for temporary, time-sensitive state.
 PostgreSQL remains the durable source of truth for confirmed bookings.
 
 The final booking flow must prevent a Redis hold from being treated as a confirmed booking without durable database confirmation.
+
+**Implementation status: this design was not built.** The real hold
+mechanism (`POST /api/bookings/shows/{showId}/seats/hold`) is a direct
+`show_seats.status` transition (`AVAILABLE → HELD`) under the §15 row
+lock — no Redis involvement at all, and none of the diagram above is
+real. Concretely, per `BookingService`'s own documented "what is NOT
+safe / NOT implemented yet":
+
+* **No hold ownership.** `show_seats` has no column recording *who* holds
+  a seat. `holdSeats` accepts a `userId` parameter, but it is currently
+  unused — not stored, not checked. Any authenticated caller who knows a
+  `showSeatId` can act on a hold regardless of who created it.
+* **No hold expiry.** There is no TTL anywhere. A seat set to `HELD`
+  stays `HELD` indefinitely unless something explicitly calls
+  `releaseHold` or a booking is cancelled — an abandoned checkout
+  permanently locks a seat today. (This is specific to *seat* holds; it is
+  unrelated to payment expiry, §25.3/FR-45, which does have a real
+  scheduled sweep.) The frontend's own seat-hold countdown timer
+  (`eventtick/src/pages/SeatSelection.tsx`) is explicitly documented there
+  as a **display-only** countdown with no corresponding backend
+  expiration — selecting seats and never completing checkout leaves them
+  `HELD` forever.
+
+Closing this gap (a Redis-backed hold with ownership and TTL, or an
+equivalent scheduled sweep) remains unimplemented, unscheduled, future
+work — not a partially-built Redis integration quietly failing, but code
+that was never written.
 
 ---
 
@@ -862,6 +916,21 @@ seat is available/held/booked for a given show.
 
 Physical database separation can be introduced later if required.
 
+**Known gap: nothing creates `show_seats` rows.** Booking Service owns
+the table, but no endpoint anywhere inserts into it —
+`BookingController` only reads (`GET .../shows/{showId}/seats`), holds
+(`POST .../hold`), and releases (`POST .../release`) seats that already
+exist; the admin seat-activity endpoint is read-only. The only place a
+`ShowSeat` entity is constructed in the entire codebase outside this note
+is a JUnit test (`BookingCreationOutboxIntegrationTest`). Every show used
+for manual or live testing had its `show_seats` rows inserted directly
+into PostgreSQL by hand. Practically, this means a `Show` created through
+Catalog Service's real `POST /api/catalog/shows` (§8) has no guarantee of
+being bookable — nothing automatically projects it into Booking Service's
+inventory. See §51 for how this surfaced through frontend integration,
+and §47.2 for why `ShowCreated`/an inventory-creation consumer was
+catalogued as a candidate event but not built.
+
 ---
 
 # 18. PostgreSQL
@@ -911,6 +980,11 @@ Show + Seat
 Temporary Redis Hold
 ```
 
+**Not implemented** — see §16. Seat holds are a plain PostgreSQL
+`show_seats.status` column transition under a row lock; Redis plays no
+role in them. Rate limiting (above) remains the one real use of Redis in
+this project.
+
 ### Future Caching
 
 Frequently requested catalog information can potentially be cached later.
@@ -920,6 +994,31 @@ Redis is not intended to replace PostgreSQL as the durable source of business re
 ---
 
 # 20. Dynamic Rate Limiting
+
+**Implementation status.** §20–§22 below describe the original Phase 1
+design. The actual Phase 11/12 implementation (`backend/gateway-service`,
+`com.eventtick.gateway.ratelimit`) realizes the "Resolve Policy → Redis →
+Allow/Reject" flow in §20 as designed, but **not** §21's `RateLimitPolicy`
+entity or §22's PostgreSQL-backed, admin-editable policy flow — see §20.1.
+
+## 20.1 What was actually built, and the open classification gap
+
+Policies are a static `category × tier` matrix
+(`eventtick.rate-limit.policies.*` in `application.yml`), read once at
+startup — not rows in PostgreSQL, not editable at runtime, and not
+refreshable without a Gateway restart (`docs/requirements.md` FR-31,
+explicitly not implemented). `RequestCategoryClassifier` recognizes
+exactly four path-based categories: `AUTH` (`/api/auth/**`), `CATALOG`
+(`/api/catalog/**`), `BOOKING` (`/api/bookings/**`), `USER`
+(`/api/users/**`). **`/api/payments/**` (Phase 15) and `/api/admin/**`
+(Phase 13) — both added to the Gateway's routes after this classifier was
+written — match none of these prefixes and fall through to `UNKNOWN`**,
+which always resolves to the fixed, conservative fallback policy rather
+than a dedicated tier-aware one. Both path groups are still rate-limited
+(never unlimited — `UNKNOWN` never means "no policy"), just without the
+plan/role-aware granularity every other category gets. Closing this means
+adding `PAYMENT`/`ADMIN` cases to `RequestCategoryClassifier` and matching
+entries to the policy matrix — not yet done.
 
 Dynamic rate limiting is one of the core architectural features of Tichboo.
 
@@ -1006,6 +1105,11 @@ The actual numeric values will be determined during implementation and testing.
 ---
 
 # 22. Dynamic Policy Management
+
+**Not implemented** — see §20.1. The flow below is the original Phase 1
+design; the real Phase 12 implementation stops at "policy chosen per
+request from configuration," with no PostgreSQL-backed policy store, no
+admin update path, and no runtime refresh.
 
 The important distinction is:
 
@@ -2432,7 +2536,8 @@ Each phase should be functional and understandable before introducing the next m
 | Catalog Service | Content, shows, venues, and catalog information            |
 | Booking Service | Seats, holds, bookings, and concurrency                    |
 | Payment Service | Payment workflow                                           |
-| Redis           | Rate-limit state, temporary holds, optional cache          |
+| Audit Service   | Kafka-consumer-only audit projections (§47–§50); no Gateway route, no synchronous callers |
+| Redis           | Rate-limit state only (§20.1). Not used for seat holds — those are plain PostgreSQL row locks, §16 |
 | PostgreSQL      | Persistent business data                                   |
 | Message Broker  | Asynchronous events                                        |
 | Prometheus      | Metrics collection                                         |
@@ -2695,7 +2800,9 @@ Completed, beyond the original Phase 1 scope below — see
   authentication alone is the complete, tested increment for now.
 * Eventtick frontend prototype (§4). Its authentication (signup, login,
   session restore, logout) now goes through the API Gateway to the User
-  Service (Phase 7.2); everything else is still mock data.
+  Service (Phase 7.2). *(Stale as of Phase 17 — retained as the Phase 7.2
+  snapshot; by Phase 17 the core catalog/show/seat/booking/payment path is
+  also real, not mock. See §51.)*
 
 The API Gateway (§5–§6) — the project's stated primary engineering
 focus — is partly built: **basic path-based routing** to the three
@@ -2849,8 +2956,9 @@ whether a route exists.
 This remains authentication-driven, JWT-only policy selection — there is
 still no admin-configurable or database-backed runtime policy management,
 no adaptive/system-load-based limiting, and no machine-learning-based rate
-limiting; all explicitly future work beyond Phase 12. The mock-data parts
-of the frontend don't use the gateway yet.
+limiting; all explicitly future work beyond Phase 12. *(Stale as of Phase
+17 — true when Phase 12 was written; by Phase 17 the frontend's core
+booking/payment path is real and does use the Gateway. See §51.)*
 
 **Redis testing (Phase 11, still used by Phase 12's tests):** this development machine has neither Docker
 nor an installed WSL distribution, so Testcontainers — the usual way to get
@@ -3159,14 +3267,25 @@ application behavior.
 **Static targets, no service discovery.** Consistent with §46's original
 proposal ("standalone Prometheus instance with static scrape targets,
 because the project currently has no service-discovery infrastructure"),
-the config lists four fixed `host:port` targets — `localhost:8080`
-(gateway-service), `8081` (user-service), `8082` (catalog-service), `8083`
-(booking-service) — each labeled with its `service` name for easier
-querying. One job (`eventtick-services`), `metrics_path:
-/actuator/prometheus` (the same Step 1 endpoint, not a new one), scrape
-interval `15s`. Moving any service off `localhost`, or to a container, or
-running multiple instances, means hand-editing these targets — there is no
-Consul/Eureka/Kubernetes discovery mechanism in this project.
+the config lists fixed `host:port` targets, each labeled with its
+`service` name for easier querying. One job (`eventtick-services`),
+`metrics_path: /actuator/prometheus` (the same Step 1 endpoint, not a new
+one), scrape interval `15s`. Moving any service off `localhost`, or to a
+container, or running multiple instances, means hand-editing these
+targets — there is no Consul/Eureka/Kubernetes discovery mechanism in
+this project.
+
+**Updated target list (as of Phase 17 documentation sync) — five of six
+services, not the four this step originally added.** `payment-service`
+(`localhost:8084`) was added to `monitoring/prometheus.yml` after this
+step, once Phase 15 gave it the same Actuator/Micrometer setup as the
+original four. **`audit-service` (`localhost:8085`, added Phase 16 Step
+3) has the identical Actuator/Micrometer dependency and `/actuator/
+prometheus` endpoint as every other service, but is not in
+`monitoring/prometheus.yml`'s `static_configs` at all** — a real,
+confirmed gap (metrics exist and are reachable; they are simply not
+scraped), not a missing capability. Closing it is a one-line addition to
+that file, not yet made.
 
 **Prometheus talks to each service directly — it does not go through the
 Gateway.** It scrapes `localhost:8080`–`8083` one by one, the same way any
@@ -3407,6 +3526,21 @@ Payment API section for the full design.
 it is out of scope for the Phase 16 addition below. Phase 15 payment code
 was implemented in Steps 2–4; see §25.1–§25.5 for its actual, current
 state.)*
+
+*(Updated, Phase 17 documentation sync.)* Phase 16 (Event-Driven
+Architecture / Kafka, §47–§50) is also complete through Step 4: real
+transactional outboxes in both `booking-service` and `payment-service`,
+two live Kafka producers, and `audit-service` consuming both into its own
+read-only projections — see §50.9 for the precise implemented/not-
+implemented boundary. Phase 17 (Frontend Integration, §51) is also
+complete: the frontend's catalog browsing, show selection, seat holds,
+booking creation, and payment now call real services through the Gateway
+end to end, not mock data — see §51 for exactly what is real, what
+remains mock, and the `show_seats` inventory gap (§17) this phase
+surfaced. The monitoring stack (§46) gained a fifth scrape target
+(`payment-service`) after Phase 15 but still lacks a sixth
+(`audit-service`, §46.3) after Phase 16 — monitoring configuration was not
+revisited when either backend phase landed.
 
 ---
 
@@ -4536,3 +4670,140 @@ ML pipeline. The payment/booking synchronous consistency mechanism
 the sole authoritative confirm/cancel-acknowledgement mechanism, with
 `PaymentSucceeded` existing purely as an independent, best-effort,
 asynchronous broadcast alongside it (FR-52).
+
+---
+
+# 51. Phase 17 — Frontend Integration (Implemented, with explicit gaps)
+
+**Status: the frontend's core catalog-browse → show-select → seat-hold →
+booking → payment path calls real backend services through the Gateway,
+end to end.** Earlier phases (§25, §47–§50) built and live-verified the
+backend; this phase replaced the matching frontend mock functions in
+`eventtick/src/services/api.ts` with real `fetch` calls through
+`BASE_URL` (`http://localhost:8080`), never a direct call to any service
+port. `docs/requirements.md` §28 (FR-57–FR-59) states the requirements
+this satisfies; this section states the architecture.
+
+## 51.1 What is real
+
+| Frontend function (`api.ts`) | Real endpoint | Backend owner |
+|---|---|---|
+| `login`, `signup`, `logout`, `getCurrentUser` | `POST /api/auth/{login,register}`, `GET /api/users/me` | user-service |
+| `getEvents`, `getEventById` | `GET /api/catalog/content(/{id})` | catalog-service |
+| `getVenueById`, `getVenuesByCity` | `GET /api/catalog/venues(/{id})` | catalog-service |
+| `getShowsByEvent`, `getShowById` | `GET /api/catalog/shows(/{id})` | catalog-service |
+| `getSeatMap` | `GET /api/catalog/seats?venueId=`, `GET /api/bookings/shows/{id}/seats` | catalog-service + booking-service, joined client-side |
+| `holdSeats` | `POST /api/bookings/shows/{showId}/seats/hold` | booking-service |
+| `createBooking`, `getBooking` | `POST /api/bookings`, `GET /api/bookings/{id}` | booking-service |
+| `createPayment` | `POST /api/payments` | payment-service |
+| `getAdminOverviewStats`, `getRateLimitStats` | `GET /api/admin/{users,content,bookings}/stats`, `GET /api/admin/rate-limits/stats` | user/catalog/booking-service, gateway-service |
+
+Every call carries the authenticated user's real JWT (`auth: true` in the
+shared `request()` helper); no user id, booking id, payment id, show id,
+or credential is hardcoded anywhere in this layer.
+
+## 51.2 Catalog's real contract, and what the frontend adapted to
+
+Catalog Service's list endpoints (`GET /api/catalog/{content,venues,shows}`)
+take **no query parameters at all** — no `type`/`contentId`/`city` filter,
+no pagination, no search (§8). Rather than inventing endpoints that don't
+exist, the frontend fetches the full list and filters client-side
+(`getEvents(type)`, `getShowsByEvent(contentId)`,
+`getVenuesByCity(city)`) — acceptable at this project's seed-data scale,
+not a pattern that would survive real volume. `getTrendingEvents`/
+`getFeaturedEvents` remain mock: Catalog Service's `Content` entity has no
+trending/featured concept, and `searchEvents` remains mock: Catalog
+Service has no search endpoint (FR-09 is unimplemented on the backend).
+
+Real `Content` (§9) has no image/banner/rating/cast/price/city columns;
+real `Venue` (§11) has no state/pincode. The frontend's `Venue.state`/
+`pincode` fields were changed from required to optional to stop claiming
+data the backend doesn't have, and the UI shows a generic placeholder
+image rather than a fabricated one for content with none. `EventFilters`'
+`city`/`genre`/`sport`/`minRating` fields still exist in the frontend but
+are inert against real data (no caller currently passes them) — documented
+rather than removed, since removing working filter UI was out of this
+phase's scope.
+
+## 51.3 Booking and payment: sequencing, idempotency, and the sync boundary
+
+`BookingSummary.tsx` performs `createBooking` then, on success,
+`createPayment` — never the reverse, and never with a client-chosen
+amount (payment-service computes it server-side from the booking's own
+`total_amount`, §25.1). The payment idempotency key is derived
+deterministically as `booking-${bookingId}-payment`, not generated via
+`crypto.randomUUID()` into component state — a re-render, remount, or
+retry of the same checkout attempt for the same booking always reuses the
+same key, which payment-service treats as a safe replay (§25.2/FR-46)
+rather than a new charge. The existing `loading` state/disabled button
+(unchanged from the booking-only integration) blocks a concurrent
+duplicate submission across the whole booking→payment sequence, not just
+the booking step.
+
+**The synchronous confirm boundary (§25.1/FR-43/FR-52) directly shapes the
+frontend's post-payment behavior.** A `SUCCESS` response from
+`POST /api/payments` means payment-service already called
+booking-service's internal confirm endpoint *before* that HTTP response
+returned — not an asynchronous Kafka-driven confirmation (an earlier
+framing of this work incorrectly assumed Kafka; corrected here against
+the actual code, §47.8/§50). That synchronous call can rarely still be
+settling via the `booking_sync_status` reconciliation sweep (§25.3/FR-45a)
+when the response arrives, so the frontend re-fetches the booking
+(`getBooking`) up to three times with a bounded one-second gap — never an
+unbounded loop — before displaying whatever status Booking Service
+actually reports. A booking that is still `PENDING` after that bounded
+window is shown as `PENDING`, not silently upgraded to `CONFIRMED` on the
+frontend.
+
+## 51.4 The catalog ↔ booking inventory gap, surfaced concretely
+
+§17 documents that no API creates `show_seats` rows. This phase makes the
+consequence concrete: a `Show` reachable through the now-real
+`GET /api/catalog/shows/{id}` is not guaranteed to have any `show_seats`
+rows in booking-service at all, and the frontend has no way to detect this
+distinction in advance — `getSeatMap` simply returns an empty seat layout
+for such a show, and `EventDetails.tsx` falls back to its existing "No
+Shows Available"/empty-seat-map handling (built for the ordinary
+empty-catalog case, not originally written with this specific gap in
+mind, but behaviorally adequate for it). No frontend code was added to
+paper over this — it is a backend data-model gap, not something the
+client layer should compensate for.
+
+## 51.5 Error handling
+
+Every newly-real call can now genuinely fail (network error, 401/403/404/
+409/429/5xx) where its mock predecessor never could. Pages that call these
+functions (`Events`, `Movies`, `Concerts`, `Sports`, `Theatre`, `Home`,
+`EventDetails`, `SeatSelection`, `BookingSummary`) were each given an
+explicit error state reusing the existing `EmptyState` component/inline-
+banner convention already established for the booking flow — a failed
+real request shows an error, never silently falls back to stale or
+fabricated data, and never leaves a loading spinner stuck indefinitely.
+
+## 51.6 What remains mock, deliberately
+
+`getTrendingEvents`, `getFeaturedEvents`, `searchEvents` (no backend
+capability to call, §51.2); `getBookings`, `getBookingById`,
+`cancelBooking` (booking history/cancellation UI); `getPlans`,
+`subscribeToPlan` (user-service has real plan data, but the frontend
+Plans page was not reached this phase); `getAdminStats`,
+`getRateLimitPolicies` (their real counterparts,
+`getAdminOverviewStats`/`getRateLimitStats`, exist and are used by the
+Admin dashboard's Phase 13 sections — §45 — but these two originals
+remain for dashboard sections Phase 13 never built a frontend for).
+
+## 51.7 Live verification performed this phase
+
+The core sequence (login → real event → real show → real seat map → hold
+→ create booking → create payment → `SUCCESS` → booking `CONFIRMED` →
+seat `BOOKED` → frontend ticket page) was live-verified end to end through
+the Gateway in an earlier session of this same integration work. During
+the specific session that added catalog/show/venue integration,
+`catalog-service` could not be started in that environment (a local
+PostgreSQL role/credential mismatch unrelated to any code in this
+project), so only the Gateway's authentication and failure-response
+behavior for `/api/catalog/**` were verified live at that time (a real,
+freshly-registered test user; `401` unauthenticated, clean `503` with
+catalog-service down, both in well under a second — confirming the
+Gateway boundary and the frontend's error-handling path, not the
+catalog happy path itself in that specific session).

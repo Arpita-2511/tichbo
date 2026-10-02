@@ -410,6 +410,20 @@ Redis may be used for temporary seat-hold state.
 
 The final booking confirmation must be persisted in PostgreSQL.
 
+**Implementation status.** The `AVAILABLE → HELD → BOOKED` transition
+(`POST /api/bookings/shows/{showId}/seats/hold`, booking-service) is
+implemented using a PostgreSQL `SELECT ... FOR UPDATE` row lock on
+`show_seats` (`ShowSeatRepository.lockAllByIdIn`), not Redis — this
+satisfies FR-14/FR-15 (no two callers can claim the same seat) without
+needing Redis at all. What is **not implemented**: Redis (or any other)
+backing for the hold itself, hold *ownership* (`show_seats` has no column
+recording who holds a seat — `holdSeats`'s `userId` parameter is accepted
+but currently unused/unchecked), and hold *expiry* (no TTL anywhere — a
+`HELD` seat stays `HELD` indefinitely unless explicitly released or the
+booking is cancelled; this is not "temporary" in the current build). See
+`docs/architecture.md` §16 and `BookingService`'s own documented
+concurrency/ownership notes.
+
 ---
 
 # 11. Booking Requirements
@@ -621,6 +635,16 @@ in `backend/gateway-service` (`com.eventtick.gateway.ratelimit`):
   open (requests are allowed, not blocked) rather than silently bypassing
   the *concept* of a failure policy — see `docs/architecture.md`'s Phase 12
   section for the reasoning. Unchanged since Phase 11.
+* **Classification coverage gap (confirmed, not yet closed).**
+  `RequestCategoryClassifier` recognizes exactly four categories
+  (`AUTH`/`CATALOG`/`BOOKING`/`USER`) by path prefix. `/api/payments/**`
+  (added Phase 15) and `/api/admin/**` (added Phase 13) match none of
+  them and resolve to `UNKNOWN`, which — per the classifier's own
+  documented contract — always falls back to the fixed, conservative
+  fallback policy rather than going unlimited. This is a real gap (no
+  dedicated `PAYMENT`/`ADMIN` category or tier-aware policy exists for
+  either path group yet), not a missing *safety* mechanism — both are
+  still rate-limited, just coarsely. See `docs/architecture.md` §20.1.
 
 ## FR-26: API Rate Limiting
 
@@ -855,6 +879,27 @@ Prometheus
     ↓
 Grafana
 ```
+
+**Implementation status (Phase 14).** FR-33/FR-34 are implemented as a
+*local, manually-run* setup, not an operational/production deployment —
+see `docs/architecture.md` §46 for the full account. Concretely: all six
+backend services expose `GET /actuator/prometheus`
+(`spring-boot-starter-actuator` + `micrometer-registry-prometheus`);
+`monitoring/prometheus.yml` statically scrapes five of them
+(`gateway-service`/`user-service`/`catalog-service`/`booking-service`/
+`payment-service`); a provisioned Grafana dashboard
+(`eventtick-service-overview.json`) reads from that Prometheus. Both
+Prometheus and Grafana were installed and live-verified locally in Phase
+14 Step 5 (real scrape targets, real panel queries) — but neither runs
+continuously, neither is containerized, and this is not "monitoring is
+operational" in a production sense: it is a local toolchain someone must
+start by hand. **Gap, not yet closed:** `audit-service` (port 8085, added
+Phase 16 Step 3) has the same Actuator/Micrometer setup as the other five
+services but is **not** listed in `monitoring/prometheus.yml`'s static
+targets — its metrics are real and reachable, just not scraped. No custom
+business metric (bookings/payments/rate-limit counters as Prometheus
+series) exists; the dashboard uses only Micrometer's built-in HTTP/JVM/
+process metrics.
 
 ---
 
@@ -1213,7 +1258,9 @@ Completed, beyond the original Phase 1 scope below:
   Refresh tokens are explicitly deferred (see that doc for why).
 * Eventtick frontend prototype. Authentication (signup, login, session
   restore, logout) is now wired to the real User Service; everything else
-  in the frontend still uses mock data.
+  in the frontend still uses mock data. *(Stale as of Phase 17 — retained
+  as this list's original snapshot; by Phase 17 the core catalog/show/
+  seat/booking/payment path is also real. See §28.)*
 
 This happened in a different order than the roadmap in §24 originally
 laid out (Catalog/Booking were built before Authentication, not after) —
@@ -1244,10 +1291,11 @@ came next was: build the API Gateway (Frontend ↔ Authentication
 integration was already done — see above). That work is long since
 complete, along with every phase after it through Phase 14 (Monitoring) —
 see `docs/architecture.md` §45 for current Admin Dashboard status, §46 for
-Monitoring, and §15 above for FR-35–FR-40. Phase 15 (Payment Integration):
-Step 1 (design) and Step 2 (a `payment-service` backend foundation) are
-both complete — see §26 below for exactly which requirements that covers,
-and which remain deferred.
+Monitoring, and §15 above for FR-35–FR-40. Phase 15 (Payment Integration,
+§26), Phase 16 (Event-Driven Architecture, §27), and Phase 17 (Frontend
+Integration, §28) are also complete to the extent each section states —
+see those sections for exactly which requirements are covered and which
+remain deferred.
 
 ---
 
@@ -1606,5 +1654,110 @@ pattern, via a dedicated `PaymentSuccessRecorder` bean rather than inside
 `@Transactional`/self-invocation reason this had to be a separate bean).
 Not yet implemented for catalog-service or user-service — neither has an
 outbox table of its own.
+
+---
+
+# 28. Frontend Integration Requirements — Phase 17
+
+**Status: FR-57–FR-59 are implemented.** The Eventtick React frontend's
+core catalog-browse-to-confirmed-booking path now calls real backend
+services through the Gateway end to end, replacing the mock data this
+document's earlier sections (§4 Client Layer, requirement status notes
+elsewhere) described as the frontend's only state for most of the
+project. This section states which parts of the frontend are real, which
+remain mock, and the concrete gaps that remain between the catalog domain
+(content/venues/shows) and the booking domain (seat inventory). Full
+reasoning is in `docs/architecture.md` §51.
+
+## FR-57: Real Catalog/Show/Venue Frontend Integration — IMPLEMENTED
+
+The frontend shall retrieve content, venue, and show information from
+Catalog Service (FR-04–FR-06) through the Gateway, rather than from
+static mock data.
+
+`eventtick/src/services/api.ts`'s `getEvents`, `getEventById`,
+`getVenueById`, `getVenuesByCity`, `getShowsByEvent`, `getShowById` call
+the real `GET /api/catalog/content(/{id})`, `GET /api/catalog/venues(/{id})`,
+`GET /api/catalog/shows(/{id})` endpoints. Catalog Service's list
+endpoints take no query parameters at all (no `type`/`contentId`/`city`
+filter, no pagination, no search) — `type`/`contentId`/`city` filtering is
+done client-side against the full list, the closest supported behavior
+rather than an invented backend capability. `getTrendingEvents`/
+`getFeaturedEvents` remain mock: Catalog Service's `Content` entity has no
+"trending"/"featured" concept to source them from, and none was added.
+Real `Content` also has no image/rating/cast/price/city columns, and real
+`Venue` has no state/pincode — the frontend type for `Venue.state`/
+`pincode` was changed from required to optional to reflect this; the UI
+falls back to a generic placeholder image rather than inventing per-event
+artwork.
+
+## FR-58: Real Booking Creation Frontend Integration — IMPLEMENTED
+
+The frontend shall create real bookings (FR-13) through Booking Service,
+using show-seats the same user actually holds, rather than simulating a
+booking locally.
+
+`eventtick/src/services/api.ts`'s `createBooking`/`getBooking` call the
+real `POST /api/bookings`/`GET /api/bookings/{id}`; `getSeatMap`/
+`holdSeats` (an earlier integration) call the real
+`GET /api/bookings/shows/{showId}/seats`/
+`POST /api/bookings/shows/{showId}/seats/hold`. The authenticated user's
+id comes from `AppContext`'s real session (`GET /api/users/me`), never
+hardcoded. `BookingSummary.tsx` sequences hold → create booking exactly
+once per checkout attempt, with the existing loading/disabled-button guard
+preventing a duplicate submit.
+
+## FR-59: Real Payment Frontend Integration — IMPLEMENTED
+
+The frontend shall create real payments (FR-41) for a real, already-created
+booking, handle the payment-service response honestly, and reflect the
+booking's actual post-payment status rather than assuming success.
+
+`createPayment` calls the real `POST /api/payments` with exactly
+`{bookingId, idempotencyKey}` — never a client-supplied amount/currency/
+userId/provider, matching FR-41/FR-49/FR-50 exactly. The idempotency key
+is derived deterministically from the real booking id
+(`booking-${bookingId}-payment`), not randomly generated per render, so a
+re-render/remount/retry of the same checkout attempt reuses the same key
+rather than risking a duplicate charge (FR-46). After a `SUCCESS`
+response, the frontend re-fetches the booking (`getBooking`) up to three
+times with a bounded 1-second gap — never an unbounded/infinite loop —
+to observe the booking's real status, because **payment confirmation is a
+synchronous call from payment-service to booking-service that completes
+*before* the `POST /api/payments` response returns** (FR-43; not
+Kafka-driven, see FR-52), and that synchronous call can rarely still be
+settling via the reconciliation sweep (FR-45a) when the HTTP response
+arrives. The frontend never marks a booking `CONFIRMED` locally; it only
+ever displays the status Booking Service actually returns.
+
+## Frontend Integration — Remaining Mock Areas (explicit, not hidden)
+
+Not covered by FR-57–FR-59, and still mock data as of this phase:
+`getTrendingEvents`/`getFeaturedEvents` (§28 FR-57, no backend concept),
+`getBookings`/`getBookingById`/`cancelBooking` (booking history/
+cancellation UI), `getPlans`/`subscribeToPlan` (FR-37's plan data has a
+real backend — user-service — but the frontend Plans page does not call
+it), `getAdminStats`/`getRateLimitPolicies` (superseded in part by the
+real `getAdminOverviewStats`/`getRateLimitStats` — see §15 FR-36/FR-40 —
+but the originals remain for the dashboard sections not yet reached), and
+`searchEvents` (Catalog Service has no search endpoint at all — FR-09
+remains unimplemented on the backend, so the frontend cannot be wired to
+it without inventing one).
+
+## Known Gap: `show_seats` Inventory Creation
+
+Booking Service owns `show_seats` (§17), but **no API anywhere creates a
+`show_seats` row** — `BookingController` only reads
+(`GET .../shows/{showId}/seats`), holds (`POST .../hold`), and releases
+(`POST .../release`) seats that already exist; `AdminShowSeatActivityController`
+is read-only. The only place a `ShowSeat` is constructed in the entire
+codebase outside this note is a JUnit test. Every show used for manual/
+live testing had its `show_seats` rows inserted directly into PostgreSQL
+by hand, not through any endpoint. This means a `Show` that exists through
+the real `GET /api/catalog/shows/{id}` (FR-57) is not guaranteed to be
+bookable — there is no guarantee its `show_seats` rows exist at all. This
+is the specific catalog-Show ↔ booking-inventory consistency gap; closing
+it (an endpoint, or an event-driven projection, that creates `show_seats`
+when a Show is created) is unimplemented, unscheduled, future work.
 
 ---
