@@ -1,10 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Eventtick API Service Layer
 //
-// Authentication (login / signup / logout / getCurrentUser) is REAL: it
-// goes through the API Gateway to user-service (see "Auth" below). Everything else
-// still returns mock data with simulated async delay, until its own
-// backend integration phase.
+// REAL (go through the Gateway to a real backend service — see each
+// function's own comment for which one and which endpoint):
+//   login, signup, logout, getCurrentUser (Auth)
+//   getSeatMap, holdSeats (Seats)
+//   createBooking (Bookings — this file's latest real integration; see its
+//     own comment for exactly what it does and does not do)
+//   getAdminOverviewStats, getRateLimitStats (Admin)
+// Everything else still returns mock data with simulated async delay,
+// until its own backend integration phase.
 //
 // All frontend components should ONLY call functions from this file,
 // never fetch data directly.
@@ -22,7 +27,7 @@ import type {
 
 import {
   movies, sportsEvents, concerts, theatreEvents, generalEvents,
-  allEvents, venues, shows, mockBookings, mockUser, plans,
+  allEvents, venues, shows, mockBookings, plans,
   adminStats, rateLimitPolicies
 } from '../data/mockData';
 
@@ -281,32 +286,56 @@ export async function holdSeats(showId: string, data: HoldSeatsInput): Promise<H
 
 // ─── Bookings ────────────────────────────────────────────────────────────────
 
+// booking-service's own CreateBookingRequest (POST /api/bookings) —
+// userId/showId/showSeatIds only. The backend computes totalAmount itself
+// server-side, from each show-seat's own authoritative price; it does not
+// accept (and never did accept) contentId/venueId/category/ticketPrice/
+// convenienceFee/totalAmount — those were this file's own earlier
+// mock-only invention and are never sent to the real endpoint.
+// showSeatIds are the same Seat.id values holdSeats already used — the
+// seats must already be HELD (by this same user) for this call to succeed.
 export interface CreateBookingInput {
+  userId: string;
   showId: string;
-  contentId: string;
-  venueId: string;
-  seats: string[];
-  category: string;
-  ticketPrice: number;
-  convenienceFee: number;
-  totalAmount: number;
+  showSeatIds: string[];
 }
 
-export async function createBooking(data: CreateBookingInput): Promise<Booking> {
-  await delay(600);
-  const newBooking: Booking = {
-    id: `b${Date.now()}`,
-    bookingRef: `EVT-${new Date().getFullYear()}-${Math.floor(Math.random() * 900000 + 100000)}`,
-    userId: mockUser.id,
-    ...data,
-    category: data.category as import('../types').SeatCategory,
-    status: 'CONFIRMED',
-    createdAt: new Date().toISOString(),
-    content: allEvents.find(e => e.id === data.contentId),
-    venue: venues.find(v => v.id === data.venueId),
-    show: shows.find(s => s.id === data.showId),
-  };
-  return newBooking;
+// booking-service's own BookingSeatDto / BookingResponse (POST/GET
+// /api/bookings...). status is PENDING immediately after creation —
+// payment-service is what later moves a booking to CONFIRMED; this call
+// never does that itself (docs/architecture.md's payment/booking
+// synchronous boundary — out of scope for this integration). createdAt/
+// updatedAt are genuinely null on this exact response (those columns are
+// database-generated and not re-read after insert — the backend's own
+// documented behavior, not a bug to work around).
+export interface BackendBookingSeat { bookingSeatId: string; showSeatId: string; priceAtBooking: number }
+export interface BackendBookingResponse {
+  bookingId: string;
+  userId: string;
+  showId: string;
+  status: 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'FAILED';
+  totalAmount: number;
+  seats: BackendBookingSeat[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * POST /api/bookings — creates a real booking from show-seats that must
+ * already be HELD by this same user (see {@link holdSeats}, called
+ * earlier in the flow). Throws {@link ApiError} on failure — notably
+ * `409 INVALID_SEAT_STATE` if a seat is no longer HELD (e.g. the hold was
+ * lost between holding and confirming), `403 FORBIDDEN` if `userId`
+ * doesn't match the caller's own JWT, `400 SEAT_SHOW_MISMATCH`/
+ * `VALIDATION_ERROR` for a malformed request. The caller decides how to
+ * present each of these, same convention as every other real call here.
+ */
+export async function createBooking(data: CreateBookingInput): Promise<BackendBookingResponse> {
+  return request<BackendBookingResponse>('/api/bookings', {
+    method: 'POST',
+    auth: true,
+    body: data,
+  });
 }
 
 export async function getBookings(userId?: string): Promise<Booking[]> {

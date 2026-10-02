@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Calendar, Clock, Ticket, CreditCard, Smartphone, CheckCircle } from 'lucide-react';
-import type { Content, Show, Venue, Seat } from '../types';
-import { createBooking } from '../services/api';
+import type { Content, Show, Venue, Seat, Booking } from '../types';
+import { createBooking, ApiError } from '../services/api';
+import { useApp } from '../context/AppContext';
 
 interface SummaryState {
   event: Content;
@@ -23,11 +24,13 @@ const paymentMethods = [
 export default function BookingSummary() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useApp();
   const state = location.state as SummaryState | null;
 
   const [selectedPayment, setSelectedPayment] = useState('upi');
   const [loading, setLoading] = useState(false);
   const [agreed, setAgreed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!state) {
     return (
@@ -42,21 +45,74 @@ export default function BookingSummary() {
 
   const handleProceed = async () => {
     if (!agreed) return;
+    if (!user) return; // not logged in — the route/header already gate this in practice
+
+    setError(null);
     setLoading(true);
     try {
-      const booking = await createBooking({
+      // POST /api/bookings — real booking-service call. The seats here
+      // must already be HELD by this same user (SeatSelection's own real
+      // holdSeats call, earlier in this flow) — this does not itself hold
+      // anything. See createBooking's own comment in api.ts for the exact
+      // request/response contract.
+      const response = await createBooking({
+        userId: user.id,
         showId: show.id,
+        showSeatIds: seats.map(s => s.id),
+      });
+
+      // Build the Booking object the rest of the frontend (the Ticket
+      // page) expects, from the REAL backend response — id, userId,
+      // showId, status, and totalAmount all come from `response`, never
+      // fabricated. status is genuinely PENDING here: payment is what
+      // later moves a booking to CONFIRMED, and that's a separate,
+      // not-yet-integrated step (docs/architecture.md's payment/booking
+      // boundary) — this page does not claim otherwise.
+      //
+      // `totalAmount` below is `response.totalAmount` — the backend's own
+      // authoritative sum of the booked seats' real prices. It does not
+      // include `convenienceFee` (a frontend-only concept the real
+      // booking model has no field for), so it may legitimately read
+      // slightly lower than the "Confirm & Pay" total shown on this page.
+      // Reconciling that display is part of the future payment
+      // integration, not this task.
+      const booking: Booking = {
+        id: response.bookingId,
+        // No separate human-readable booking reference exists on the
+        // backend yet — reuse the real booking id rather than invent one.
+        bookingRef: response.bookingId,
+        userId: response.userId,
+        showId: response.showId,
         contentId: event.id,
         venueId: venue.id,
         seats: seats.map(s => s.label),
         category: seats[0]?.category || 'REGULAR',
         ticketPrice,
         convenienceFee,
-        totalAmount,
-      });
+        totalAmount: response.totalAmount,
+        status: response.status,
+        // response.createdAt is genuinely null here (see createBooking's
+        // own comment) — the frontend Booking type requires a string, so
+        // this falls back to "now", which is correct to the second: the
+        // real row was just committed synchronously, not fabricated data.
+        createdAt: response.createdAt ?? new Date().toISOString(),
+        content: event,
+        venue,
+        show,
+      };
       navigate(`/ticket/${booking.id}`, { state: { booking } });
-    } catch {
-      alert('Booking failed. Please try again.');
+    } catch (err) {
+      // INVALID_SEAT_STATE means the hold is gone (expired, released, or
+      // never actually held) — the backend's own message names the
+      // show-seat by id, not something to show a customer. There is no
+      // seat map on this page to refresh; the existing "Back to seat
+      // selection" link above re-fetches a real one when followed.
+      const message = err instanceof ApiError && err.code === 'INVALID_SEAT_STATE'
+        ? 'Your seat hold has expired or is no longer valid. Please go back and select your seats again.'
+        : err instanceof ApiError
+          ? err.message
+          : 'Could not complete your booking. Please try again.';
+      setError(message);
       setLoading(false);
     }
   };
@@ -173,6 +229,8 @@ export default function BookingSummary() {
           I agree to the <a href="#" className="text-accent-lighter hover:underline">Terms & Conditions</a> and <a href="#" className="text-accent-lighter hover:underline">Cancellation Policy</a>. I understand that tickets once booked cannot be refunded.
         </span>
       </label>
+
+      {error && <p className="text-error text-sm text-center mb-4">{error}</p>}
 
       {/* CTA */}
       <button
