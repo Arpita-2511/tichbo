@@ -5,7 +5,8 @@
 // function's own comment for which one and which endpoint):
 //   login, signup, logout, getCurrentUser (Auth)
 //   getSeatMap, holdSeats (Seats)
-//   createBooking (Bookings — this file's latest real integration; see its
+//   createBooking, getBooking (Bookings — see each one's own comment)
+//   createPayment (Payments — this file's latest real integration; see its
 //     own comment for exactly what it does and does not do)
 //   getAdminOverviewStats, getRateLimitStats (Admin)
 // Everything else still returns mock data with simulated async delay,
@@ -338,6 +339,19 @@ export async function createBooking(data: CreateBookingInput): Promise<BackendBo
   });
 }
 
+/**
+ * GET /api/bookings/{bookingId} — the same real {@link BackendBookingResponse}
+ * {@link createBooking} returns, re-fetched fresh. Used to check a booking's
+ * current `status` after a payment, since payment success confirms the
+ * booking synchronously on the backend (see {@link createPayment}'s own
+ * comment) but that confirmation can occasionally still be in flight when
+ * the payment call returns. Throws {@link ApiError} on failure (404 if the
+ * booking doesn't exist, 403 if it belongs to another user).
+ */
+export async function getBooking(bookingId: string): Promise<BackendBookingResponse> {
+  return request<BackendBookingResponse>(`/api/bookings/${bookingId}`, { auth: true });
+}
+
 export async function getBookings(userId?: string): Promise<Booking[]> {
   await delay(400);
   return mockBookings.filter(b => !userId || b.userId === userId);
@@ -351,6 +365,68 @@ export async function getBookingById(id: string): Promise<Booking | null> {
 export async function cancelBooking(_id: string): Promise<boolean> {
   await delay(500);
   return true;
+}
+
+// ─── Payments ────────────────────────────────────────────────────────────────
+
+// payment-service's own CreatePaymentRequest (POST /api/payments) —
+// bookingId and idempotencyKey only. amount/currency/userId/provider are
+// deliberately never sent: amount is computed server-side from the
+// booking's own totalAmount, userId comes from the caller's JWT, and
+// provider is a fixed server-side configuration (CreatePaymentRequest's own
+// Javadoc). There is no "amount" field to get wrong on this end.
+export interface CreatePaymentInput {
+  bookingId: string;
+  idempotencyKey: string;
+}
+
+export type PaymentStatus = 'CREATED' | 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+
+// payment-service's own PaymentResponse.
+export interface BackendPaymentResponse {
+  id: string;
+  bookingId: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  provider: string;
+  providerReference: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * POST /api/payments — charges for an already-created booking (see
+ * {@link createBooking}, called earlier in the flow; a payment can never be
+ * created before its booking exists). On `status === 'SUCCESS'`,
+ * payment-service confirms the booking with a direct, synchronous call to
+ * booking-service's internal confirm endpoint *before this call returns* —
+ * not through Kafka. (The service does also publish a `PaymentSucceeded`
+ * Kafka event, but that is a separate, audit-only side channel consumed by
+ * audit-service; it has no bearing on booking confirmation.) That
+ * synchronous confirm can rarely still be in flight by the time this
+ * resolves (e.g. a transient blip, retried by the backend's own
+ * reconciliation sweep) — callers should re-fetch the booking with
+ * {@link getBooking} rather than assume it is already CONFIRMED.
+ *
+ * `idempotencyKey` must stay the same across retries of the *same* logical
+ * payment attempt (see its caller in BookingSummary.tsx for how a stable
+ * one is derived) — reusing it safely replays the same attempt instead of
+ * double-charging; a new booking naturally gets a new key.
+ *
+ * Throws {@link ApiError} on failure — notably `409 IDEMPOTENCY_KEY_CONFLICT`
+ * (the key was already used for a different booking) and
+ * `409 DUPLICATE_PAYMENT_FOR_BOOKING` (this booking already has a live
+ * payment). The caller decides how to present each of these, same
+ * convention as every other real call here.
+ */
+export async function createPayment(data: CreatePaymentInput): Promise<BackendPaymentResponse> {
+  return request<BackendPaymentResponse>('/api/payments', {
+    method: 'POST',
+    auth: true,
+    body: data,
+  });
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────

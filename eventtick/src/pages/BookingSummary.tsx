@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Calendar, Clock, Ticket, CreditCard, Smartphone, CheckCircle } from 'lucide-react';
 import type { Content, Show, Venue, Seat, Booking } from '../types';
-import { createBooking, ApiError } from '../services/api';
+import { createBooking, createPayment, getBooking, ApiError, type BackendBookingResponse } from '../services/api';
 import { useApp } from '../context/AppContext';
 
 interface SummaryState {
@@ -20,6 +20,30 @@ const paymentMethods = [
   { id: 'card', label: 'Credit / Debit Card', icon: <CreditCard size={18} /> },
   { id: 'netbanking', label: 'Net Banking', icon: <CreditCard size={18} /> },
 ];
+
+// payment-service's own terminal, non-SUCCESS statuses, in user-safe
+// language. CREATED/PENDING are not expected back from a single
+// synchronous POST /api/payments response (MockPaymentProvider resolves
+// immediately to SUCCESS or FAILED) but are covered for completeness.
+const PAYMENT_FAILURE_MESSAGES: Partial<Record<string, string>> = {
+  FAILED: 'Your payment could not be processed. Please try again.',
+  EXPIRED: 'Your payment session expired. Please try again.',
+  CANCELLED: 'Your payment was cancelled.',
+};
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) {
+    switch (err.code) {
+      case 'INVALID_SEAT_STATE':
+        return 'Your seat hold has expired or is no longer valid. Please go back and select your seats again.';
+      case 'DUPLICATE_PAYMENT_FOR_BOOKING':
+        return 'A payment for this booking is already being processed. Please wait a moment and check your bookings.';
+      default:
+        return err.message;
+    }
+  }
+  return 'Could not complete your booking. Please try again.';
+}
 
 export default function BookingSummary() {
   const location = useLocation();
@@ -54,65 +78,99 @@ export default function BookingSummary() {
       // must already be HELD by this same user (SeatSelection's own real
       // holdSeats call, earlier in this flow) — this does not itself hold
       // anything. See createBooking's own comment in api.ts for the exact
-      // request/response contract.
-      const response = await createBooking({
+      // request/response contract. status comes back PENDING; payment is
+      // what moves it to CONFIRMED, below.
+      const bookingResponse = await createBooking({
         userId: user.id,
         showId: show.id,
         showSeatIds: seats.map(s => s.id),
       });
 
+      // Idempotency key is derived from the real booking id, not randomly
+      // generated and stored in component state — so it is naturally
+      // stable across re-renders, double-clicks (blocked anyway by
+      // `loading` disabling this button) and remounts, and a retry of
+      // this exact payment attempt always reuses it. A genuinely new
+      // attempt only ever happens for a new booking (a new hold, after
+      // going back to seat selection), which gets its own new key for
+      // free. See createPayment's own comment in api.ts.
+      const idempotencyKey = `booking-${bookingResponse.bookingId}-payment`;
+
+      // POST /api/payments — real payment-service call, strictly after the
+      // booking above exists. Only bookingId + idempotencyKey are sent:
+      // amount/currency/userId/provider are never supplied by the
+      // frontend (see createPayment's own comment) — the backend computes
+      // and owns all of them.
+      const paymentResponse = await createPayment({
+        bookingId: bookingResponse.bookingId,
+        idempotencyKey,
+      });
+
+      if (paymentResponse.status !== 'SUCCESS') {
+        setError(PAYMENT_FAILURE_MESSAGES[paymentResponse.status] ?? 'Your payment was not completed. Please try again.');
+        setLoading(false);
+        return;
+      }
+
+      // A SUCCESS payment response means payment-service already confirmed
+      // the booking via a direct, synchronous call to booking-service
+      // (not Kafka — see createPayment's own comment) before this request
+      // returned. That confirmation can rarely still be catching up (a
+      // transient blip, retried by the backend's own reconciliation
+      // sweep), so re-fetch a few times, bounded — never forever — rather
+      // than assume CONFIRMED. If the booking still reads PENDING after
+      // this, it is shown honestly as PENDING (see Ticket.tsx) rather than
+      // faked as CONFIRMED.
+      let latestBooking: BackendBookingResponse = bookingResponse;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          latestBooking = await getBooking(bookingResponse.bookingId);
+        } catch {
+          // Best-effort refresh; the payment already succeeded, so fall
+          // back to the last known booking state rather than losing it.
+          break;
+        }
+        if (latestBooking.status !== 'PENDING') break;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
       // Build the Booking object the rest of the frontend (the Ticket
       // page) expects, from the REAL backend response — id, userId,
-      // showId, status, and totalAmount all come from `response`, never
-      // fabricated. status is genuinely PENDING here: payment is what
-      // later moves a booking to CONFIRMED, and that's a separate,
-      // not-yet-integrated step (docs/architecture.md's payment/booking
-      // boundary) — this page does not claim otherwise.
+      // showId, status, and totalAmount all come from `latestBooking`,
+      // never fabricated.
       //
-      // `totalAmount` below is `response.totalAmount` — the backend's own
-      // authoritative sum of the booked seats' real prices. It does not
-      // include `convenienceFee` (a frontend-only concept the real
-      // booking model has no field for), so it may legitimately read
-      // slightly lower than the "Confirm & Pay" total shown on this page.
-      // Reconciling that display is part of the future payment
-      // integration, not this task.
+      // `totalAmount` below is the backend's own authoritative sum of the
+      // booked seats' real prices. It does not include `convenienceFee` (a
+      // frontend-only concept the real booking model has no field for), so
+      // it may legitimately read slightly lower than the "Confirm & Pay"
+      // total shown on this page.
       const booking: Booking = {
-        id: response.bookingId,
+        id: latestBooking.bookingId,
         // No separate human-readable booking reference exists on the
         // backend yet — reuse the real booking id rather than invent one.
-        bookingRef: response.bookingId,
-        userId: response.userId,
-        showId: response.showId,
+        bookingRef: latestBooking.bookingId,
+        userId: latestBooking.userId,
+        showId: latestBooking.showId,
         contentId: event.id,
         venueId: venue.id,
         seats: seats.map(s => s.label),
         category: seats[0]?.category || 'REGULAR',
         ticketPrice,
         convenienceFee,
-        totalAmount: response.totalAmount,
-        status: response.status,
-        // response.createdAt is genuinely null here (see createBooking's
-        // own comment) — the frontend Booking type requires a string, so
-        // this falls back to "now", which is correct to the second: the
-        // real row was just committed synchronously, not fabricated data.
-        createdAt: response.createdAt ?? new Date().toISOString(),
+        totalAmount: latestBooking.totalAmount,
+        status: latestBooking.status,
+        // createdAt is genuinely null on the create-booking response (see
+        // createBooking's own comment) and may still be null here if the
+        // bounded refresh above never got a fresher read — the frontend
+        // Booking type requires a string, so this falls back to "now".
+        createdAt: latestBooking.createdAt ?? new Date().toISOString(),
         content: event,
         venue,
         show,
       };
       navigate(`/ticket/${booking.id}`, { state: { booking } });
     } catch (err) {
-      // INVALID_SEAT_STATE means the hold is gone (expired, released, or
-      // never actually held) — the backend's own message names the
-      // show-seat by id, not something to show a customer. There is no
-      // seat map on this page to refresh; the existing "Back to seat
-      // selection" link above re-fetches a real one when followed.
-      const message = err instanceof ApiError && err.code === 'INVALID_SEAT_STATE'
-        ? 'Your seat hold has expired or is no longer valid. Please go back and select your seats again.'
-        : err instanceof ApiError
-          ? err.message
-          : 'Could not complete your booking. Please try again.';
-      setError(message);
+      setError(describeError(err));
       setLoading(false);
     }
   };
