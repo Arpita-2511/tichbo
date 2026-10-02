@@ -238,6 +238,20 @@ spring:
           predicates:
             - Path=/api/admin/shows/{showId}/seat-activity
 
+        # Phase 18: show_seats inventory creation (the gap docs/architecture.md
+        # §17/§51.4 documents — previously no API created these rows at all).
+        # Same explicit-per-endpoint discipline as every other admin route
+        # above: this one path only, routed to booking-service because it
+        # owns show_seats, not catalog-service (which owns shows/seats
+        # themselves). {showId} is one path segment, so this only ever
+        # matches .../shows/<id>/seats — never .../shows/<id>/seat-activity
+        # (a longer, distinct literal path, already routed above) and never
+        # a bare .../shows/<id>.
+        - id: admin-show-seats-create
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/admin/shows/{showId}/seats
+
         # Phase 13 FR-37 fix: GET /api/admin/users (Phase 13.4) has been
         # implemented since before admin-content existed, but never got its
         # own explicit route — a pre-existing gap found by the FR-37

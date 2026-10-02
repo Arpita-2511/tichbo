@@ -49,13 +49,13 @@ class GatewayRoutesTest {
     }
 
     @Test
-    void exactlyNineteenRoutesAreRegistered() {
+    void exactlyTwentyRoutesAreRegistered() {
         assertThat(routes()).extracting(Route::getId)
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "payment-service",
                         "admin-content", "admin-content-stats", "admin-content-by-id", "admin-show-cancel",
                         "admin-shows", "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
-                        "admin-bookings-stats", "admin-show-seat-activity", "admin-users", "admin-users-stats",
-                        "admin-users-plan", "admin-users-role");
+                        "admin-bookings-stats", "admin-show-seat-activity", "admin-show-seats-create", "admin-users",
+                        "admin-users-stats", "admin-users-plan", "admin-users-role");
     }
 
     @Test
@@ -370,6 +370,32 @@ class GatewayRoutesTest {
                 .isEqualTo("admin-show-cancel");
         assertThat(matchFor("/api/admin/bookings")).isNotEmpty();
         assertThat(matchFor("/api/admin/bookings").get().getId()).isEqualTo("admin-bookings");
+    }
+
+    @Test
+    void adminShowSeatsCreatePath_goesToBookingService() {
+        // Phase 18: show_seats inventory creation — routed to booking-service
+        // (it owns show_seats), not catalog-service (which owns shows/seats
+        // themselves).
+        assertRoutedTo("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seats",
+                "admin-show-seats-create", "http://localhost:8083");
+    }
+
+    @Test
+    void adminShowSeatsCreateRoute_matchesOnlyThatExactShape_notTheSeatActivityOrByIdRoutes() {
+        // "seats" vs "seat-activity" are different literal final segments —
+        // neither should ever be able to swallow the other — and a bare
+        // show id (admin-show-by-id, catalog-service) must stay distinct too.
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seat-activity")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seat-activity").get().getId())
+                .isEqualTo("admin-show-seat-activity");
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000").get().getId())
+                .isEqualTo("admin-show-by-id");
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/seats/extra")).isEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel")).isNotEmpty();
+        assertThat(matchFor("/api/admin/shows/123e4567-e89b-12d3-a456-426614174000/cancel").get().getId())
+                .isEqualTo("admin-show-cancel");
     }
 
     @Test

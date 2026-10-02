@@ -916,20 +916,23 @@ seat is available/held/booked for a given show.
 
 Physical database separation can be introduced later if required.
 
-**Known gap: nothing creates `show_seats` rows.** Booking Service owns
-the table, but no endpoint anywhere inserts into it —
-`BookingController` only reads (`GET .../shows/{showId}/seats`), holds
-(`POST .../hold`), and releases (`POST .../release`) seats that already
-exist; the admin seat-activity endpoint is read-only. The only place a
-`ShowSeat` entity is constructed in the entire codebase outside this note
-is a JUnit test (`BookingCreationOutboxIntegrationTest`). Every show used
-for manual or live testing had its `show_seats` rows inserted directly
-into PostgreSQL by hand. Practically, this means a `Show` created through
-Catalog Service's real `POST /api/catalog/shows` (§8) has no guarantee of
-being bookable — nothing automatically projects it into Booking Service's
-inventory. See §51 for how this surfaced through frontend integration,
-and §47.2 for why `ShowCreated`/an inventory-creation consumer was
-catalogued as a candidate event but not built.
+**Gap closed (Phase 18): `POST /api/admin/shows/{showId}/seats` creates
+`show_seats` rows.** Until this phase, no endpoint anywhere inserted into
+the table — `BookingController` only read (`GET .../shows/{showId}/seats`),
+held (`POST .../hold`), and released (`POST .../release`) seats that
+already existed; the admin seat-activity endpoint was (and remains)
+read-only; the only place a `ShowSeat` entity was constructed in the
+entire codebase was a JUnit test. Every show used for manual or live
+testing before Phase 18 had its `show_seats` rows inserted directly into
+PostgreSQL by hand. See §52 for the new endpoint's design and why it
+does not call catalog-service to validate `showId`/`seatId`. This still
+does not make the gap fully self-closing: creating a `Show` through
+Catalog Service's `POST /api/catalog/shows` (§8) still does not
+automatically create its inventory — an administrator must call the new
+endpoint separately, for every show, after creating it. See §47.2 for why
+`ShowCreated`/an automatic inventory-creation consumer was catalogued as
+a candidate event but still not built; Phase 18 closed the "no API at
+all" gap, not the "not automatic" one.
 
 ---
 
@@ -4807,3 +4810,131 @@ freshly-registered test user; `401` unauthenticated, clean `503` with
 catalog-service down, both in well under a second — confirming the
 Gateway boundary and the frontend's error-handling path, not the
 catalog happy path itself in that specific session).
+
+---
+
+# 52. Phase 18 — Show-Seat Inventory Creation API
+
+**Status: implemented.** `POST /api/admin/shows/{showId}/seats`
+(booking-service) closes the gap §17 documents: until this phase, nothing
+in the codebase created a `show_seats` row outside a JUnit test or a
+manual SQL insert.
+
+## 52.1 Why booking-service, not catalog-service
+
+`show_seats` is booking-service's own table (§17's ownership boundary:
+Catalog Service owns `shows`/`seats`; Booking Service owns whether a given
+seat is available/held/booked for a given show). The new endpoint
+therefore lives in booking-service, alongside the existing read-only seat
+map (`ShowSeatQueryService`) and the existing lifecycle transitions
+(`BookingService`), as a new, separate `ShowSeatInventoryService` —
+inventory *creation* is a different concern from both (it inserts brand
+new rows; it never transitions an existing row's status), so it gets its
+own class rather than being added to either existing one.
+
+## 52.2 The ownership question: no new cross-service HTTP call
+
+The kickoff for this phase explicitly asked whether booking-service
+should validate a show's existence against its own database or by calling
+catalog-service, and said not to choose arbitrarily. Inspection of the
+existing code answered this: **neither.** `ShowSeat`'s own class Javadoc
+already documents that `showId`/`seatId` are plain UUID foreign-key
+references, with no JPA relationship to a Show/Seat entity, specifically
+so the mapping stays correct if the databases are ever physically split
+— and no existing booking-service code path (`holdSeats`, `createBooking`)
+validates show/seat existence at all, against either its own database or
+catalog-service's API. The new endpoint follows this exact, already-
+established precedent: it does not call catalog-service, and it does not
+query the `shows`/`seats` tables directly (which would mean adding a JPA
+entity for tables this service doesn't own, undoing the separation
+`ShowSeat`'s Javadoc deliberately preserves). The real safety net is the
+database itself: `fk_show_seats_show`/`fk_show_seats_seat`
+(migration 0008, unchanged, already in the real PostgreSQL schema) reject
+a nonexistent show or seat at insert time, in production, exactly as they
+already silently did for every write to this table before this phase.
+This cannot be exercised by this project's H2-backed tests (Hibernate
+only generates a foreign key from a mapped JPA relationship, and this
+entity deliberately has none — the same reason FR-47's partial-unique-
+index test gap exists), so it is not something this phase's test suite
+asserts; it is a real constraint in the real database regardless.
+
+## 52.3 Duplicate protection: application-level, not just the database
+
+`uq_show_seats_show_seat UNIQUE (show_id, seat_id)` (migration 0008) was
+already sufficient — **no migration was created for this phase.**
+`ShowSeatInventoryService.createSeats` pre-checks for an existing
+(show, seat) pairing with a plain repository read (`findByShowId`,
+already used by `ShowSeatQueryService`) before inserting, rather than
+relying on catching the database's own constraint violation — the
+`PaymentService`-style "pre-check plus `DataIntegrityViolationException`
+backstop" pattern (FR-46) was considered and deliberately not copied here:
+that pattern earns its complexity under genuine concurrent-retry traffic
+(a customer's browser retrying a payment), which this low-frequency,
+administrator-only seeding operation does not have. A rejected pre-check
+throws `DuplicateShowSeatException` (409 `DUPLICATE_SHOW_SEAT`). A
+duplicate seat id *within the same request* is a different, request-shape
+problem, checked first and separately: it throws `IllegalArgumentException`
+(400 `VALIDATION_ERROR`), mirroring `BookingService.requireNonEmpty`'s
+existing "duplicate seat ids in request" check for `holdSeats`/
+`createBooking`. Both checks run before any row is persisted, and the
+whole operation is one `@Transactional` method — all-or-nothing.
+
+## 52.4 Request/response contract
+
+```
+POST /api/admin/shows/{showId}/seats
+{ "seats": [ { "seatId": "<uuid>", "price": 450.00 }, ... ] }
+
+201 Created
+Location: /api/bookings/shows/{showId}/seats
+{ "showId": "<uuid>", "seats": [ { "showSeatId": "<uuid>", "seatId": "<uuid>", "status": "AVAILABLE", "price": 450.00 }, ... ] }
+```
+
+The response reuses the existing `SeatMapResponse`/`SeatMapItemDto` shape
+— exactly what `GET .../seats`/`POST .../seats/hold` already return —
+rather than inventing a second seat model for the same data. `status` is
+never a request field: every newly created row starts `AVAILABLE`, the
+same "not a real decision, so not a caller-supplied parameter" reasoning
+`ShowService.create` already applies to a new Show's status (§8).
+
+## 52.5 Authorization: no new security mechanism
+
+No security code changed anywhere, in either service. `/api/admin/**`
+already required `ROLE_ADMIN` at both the Gateway
+(`GatewaySecurityConfig`) and booking-service's own `SecurityConfig`
+(defense in depth, Phase 15 Step 4) before this phase, as a path-based
+rule — the new endpoint's path already matches it. The only new
+configuration is one explicit Gateway route entry
+(`admin-show-seats-create`, `Path=/api/admin/shows/{showId}/seats` →
+booking-service), following the exact same one-literal-path-per-endpoint
+discipline every other admin route in this project already uses — no
+`/api/admin/shows/**` wildcard was introduced, and the route does not
+collide with the sibling `.../seat-activity`, `.../cancel`, or bare
+`.../{id}` routes (each has a different, distinct final path segment or
+depth).
+
+## 52.6 What changed, concretely
+
+New (booking-service): `ShowSeatInventoryService`,
+`AdminShowSeatInventoryController`, `CreateShowSeatsRequest`,
+`ShowSeatDefinition`, `DuplicateShowSeatException`, plus one new
+`GlobalExceptionHandler` entry (`DUPLICATE_SHOW_SEAT` → 409). One existing
+file changed: `ShowSeat`'s no-arg constructor went from `protected` to
+`public` — it was `protected` only because, until this phase, nothing in
+production code legitimately constructed a new `ShowSeat` (every status
+transition mutated an existing, already-persisted row; only JPA itself and
+test reflection ever called it). New (gateway-service): one route entry,
+no security-rule change. No database migration — the schema already
+supported everything this endpoint needed (table, columns, `AVAILABLE`
+default, the unique constraint, both foreign keys).
+
+## 52.7 What this phase does not change
+
+Seat holds remain exactly as §16 describes: a plain PostgreSQL status
+column under row-level locking, no Redis, no ownership tracking, no TTL —
+this phase only creates rows in the `AVAILABLE` state; it does not touch
+`holdSeats`, `releaseHold`, `confirmBooking`, or `cancelBooking`, and
+nothing about seat-hold architecture changed. Catalog Service still has no
+mechanism — automatic or otherwise — that calls this new endpoint when a
+`Show` is created; an administrator must still call it separately,
+per show. That remaining gap (§17) is unchanged by this phase.

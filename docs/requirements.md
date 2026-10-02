@@ -1744,20 +1744,59 @@ but the originals remain for the dashboard sections not yet reached), and
 remains unimplemented on the backend, so the frontend cannot be wired to
 it without inventing one).
 
-## Known Gap: `show_seats` Inventory Creation
+## Known Gap: `show_seats` Inventory Creation — Partially Closed (Phase 18, §29)
 
-Booking Service owns `show_seats` (§17), but **no API anywhere creates a
-`show_seats` row** — `BookingController` only reads
-(`GET .../shows/{showId}/seats`), holds (`POST .../hold`), and releases
-(`POST .../release`) seats that already exist; `AdminShowSeatActivityController`
-is read-only. The only place a `ShowSeat` is constructed in the entire
-codebase outside this note is a JUnit test. Every show used for manual/
-live testing had its `show_seats` rows inserted directly into PostgreSQL
-by hand, not through any endpoint. This means a `Show` that exists through
-the real `GET /api/catalog/shows/{id}` (FR-57) is not guaranteed to be
-bookable — there is no guarantee its `show_seats` rows exist at all. This
-is the specific catalog-Show ↔ booking-inventory consistency gap; closing
-it (an endpoint, or an event-driven projection, that creates `show_seats`
-when a Show is created) is unimplemented, unscheduled, future work.
+Booking Service owns `show_seats` (§17); until Phase 18, **no API
+anywhere created a `show_seats` row** — `BookingController` only read
+(`GET .../shows/{showId}/seats`), held (`POST .../hold`), and released
+(`POST .../release`) seats that already existed; `AdminShowSeatActivityController`
+was (and remains) read-only. Phase 18 (§29) added
+`POST /api/admin/shows/{showId}/seats`, an admin-only endpoint that
+creates one or more `show_seats` rows for an existing show. **What this
+does not close:** creating a `Show` through Catalog Service's real
+`POST /api/catalog/shows` still does not automatically create its
+inventory — an administrator must call the new endpoint separately, per
+show, so a `Show` reachable through `GET /api/catalog/shows/{id}`
+(FR-57) is still not *guaranteed* to be bookable, only *able to be made*
+bookable without a manual SQL insert. Automatic projection (an
+event-driven consumer reacting to a future `ShowCreated` event, or
+equivalent) remains unimplemented, unscheduled, future work.
 
 ---
+
+# 29. Show-Seat Inventory Requirements — Phase 18
+
+**Status: FR-60 is implemented.** Full design/architecture reasoning is in
+`docs/architecture.md` §52; this section states the requirement it
+satisfies.
+
+## FR-60: Show-Seat Inventory Creation — IMPLEMENTED
+
+The system shall let an administrator create `show_seats` inventory
+(FR-07/FR-11) for an existing show, so a show is not limited to seats
+created by a manual database insert. Inventory creation shall:
+
+* be restricted to an authenticated administrator — a `CUSTOMER` token
+  shall receive `403`, no token shall receive `401`;
+* reject a request that would create a seat already configured for that
+  show, and reject a request that names the same seat twice, in both
+  cases without creating any row from that request;
+* assign every newly created seat the system's existing initial
+  `AVAILABLE` state (FR-11) — never a caller-supplied status.
+
+`POST /api/admin/shows/{showId}/seats` (`ShowSeatInventoryService`/
+`AdminShowSeatInventoryController`, booking-service), gated by the
+existing `/api/admin/** -> ROLE_ADMIN` rule already enforced at both the
+Gateway and booking-service's own `SecurityConfig` (no new security
+mechanism was introduced). Duplicate protection is an application-level
+pre-check against `show_seats`, backed by the pre-existing
+`uq_show_seats_show_seat` database constraint (migration 0008 — no new
+migration was needed). Does not validate `showId`/`seatId` against
+Catalog Service: see `docs/architecture.md` §52.2 for why that mirrors
+this codebase's own existing precedent rather than introducing a new
+cross-service dependency.
+
+**Explicitly not covered by FR-60:** automatic inventory creation when a
+Catalog Service `Show` is created (the Known Gap note above, and §17's
+own note, remain partially open — an administrator must still call this
+endpoint separately per show).

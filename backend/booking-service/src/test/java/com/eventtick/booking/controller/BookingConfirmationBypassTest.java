@@ -6,6 +6,7 @@ import com.eventtick.booking.entity.Booking;
 import com.eventtick.booking.entity.BookingStatus;
 import com.eventtick.booking.security.JwtService;
 import com.eventtick.booking.service.BookingService;
+import com.eventtick.booking.service.ShowSeatInventoryService;
 import com.eventtick.booking.service.ShowSeatQueryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,6 +57,13 @@ class BookingConfirmationBypassTest {
 
     @MockBean
     private ShowSeatQueryService showSeatQueryService;
+
+    // Bare @WebMvcTest (no controller class argument) loads every controller
+    // in the service, including AdminShowSeatInventoryController — its
+    // dependency must be mocked here too, same as the two services above,
+    // or the context fails to start.
+    @MockBean
+    private ShowSeatInventoryService showSeatInventoryService;
 
     private static Booking unpaidBooking(UUID id) {
         Booking booking = new Booking();

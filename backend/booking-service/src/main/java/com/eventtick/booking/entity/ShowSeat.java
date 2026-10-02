@@ -83,8 +83,13 @@ public class ShowSeat {
     @Column(name = "updated_at", nullable = false, insertable = false, updatable = false)
     private Instant updatedAt;
 
-    protected ShowSeat() {
-        // Required by JPA.
+    /**
+     * Public (not just JPA-required) since {@code ShowSeatInventoryService}
+     * is the first legitimate production code path that constructs a new
+     * {@code ShowSeat} directly (every status transition before it mutated
+     * an existing, already-persisted row) — see that class's own Javadoc.
+     */
+    public ShowSeat() {
     }
 
     public UUID getId() {

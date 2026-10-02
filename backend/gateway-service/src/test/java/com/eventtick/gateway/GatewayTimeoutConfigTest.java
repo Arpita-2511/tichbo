@@ -54,8 +54,8 @@ class GatewayTimeoutConfigTest {
                 .containsExactlyInAnyOrder("user-service", "catalog-service", "booking-service", "payment-service",
                         "admin-content", "admin-content-stats", "admin-content-by-id", "admin-show-cancel",
                         "admin-shows", "admin-show-by-id", "admin-venues", "admin-venue-by-id", "admin-bookings",
-                        "admin-bookings-stats", "admin-show-seat-activity", "admin-users", "admin-users-stats",
-                        "admin-users-plan", "admin-users-role");
+                        "admin-bookings-stats", "admin-show-seat-activity", "admin-show-seats-create", "admin-users",
+                        "admin-users-stats", "admin-users-plan", "admin-users-role");
         assertThat(routes).allSatisfy(route ->
                 assertThat(route.getMetadata()).as("route %s has no per-route timeout override", route.getId())
                         .doesNotContainKeys("connect-timeout", "response-timeout"));

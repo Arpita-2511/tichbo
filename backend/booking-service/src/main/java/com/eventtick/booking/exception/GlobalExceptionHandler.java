@@ -51,6 +51,11 @@ public class GlobalExceptionHandler {
         return respond(HttpStatus.BAD_REQUEST, "SEAT_SHOW_MISMATCH", ex.getMessage());
     }
 
+    @ExceptionHandler(DuplicateShowSeatException.class)
+    public ResponseEntity<ErrorResponse> handleDuplicateShowSeat(DuplicateShowSeatException ex) {
+        return respond(HttpStatus.CONFLICT, "DUPLICATE_SHOW_SEAT", ex.getMessage());
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
         return respond(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getMessage());
