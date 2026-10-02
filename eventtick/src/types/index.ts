@@ -52,8 +52,11 @@ export interface Venue {
   name: string;
   address: string;
   city: string;
-  state: string;
-  pincode: string;
+  // catalog-service's real Venue has no state/pincode columns at all (see
+  // getVenueById's own comment in api.ts) — optional rather than required,
+  // since real data genuinely has neither.
+  state?: string;
+  pincode?: string;
   mapUrl?: string;
   amenities?: string[];
   totalCapacity?: number;

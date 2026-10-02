@@ -6,9 +6,16 @@
 //   login, signup, logout, getCurrentUser (Auth)
 //   getSeatMap, holdSeats (Seats)
 //   createBooking, getBooking (Bookings — see each one's own comment)
-//   createPayment (Payments — this file's latest real integration; see its
-//     own comment for exactly what it does and does not do)
+//   createPayment (Payments — see its own comment for exactly what it
+//     does and does not do)
+//   getEvents, getEventById, getVenueById, getVenuesByCity,
+//     getShowsByEvent, getShowById (Catalog — this file's latest real
+//     integration; see each one's own comment, especially for the fields
+//     catalog-service's real data doesn't carry)
 //   getAdminOverviewStats, getRateLimitStats (Admin)
+// getTrendingEvents/getFeaturedEvents stay on mock data — catalog-service
+// has no "trending"/"featured" concept to source them from (see
+// getTrendingEvents's own comment).
 // Everything else still returns mock data with simulated async delay,
 // until its own backend integration phase.
 //
@@ -27,8 +34,7 @@ import type {
 } from '../types';
 
 import {
-  movies, sportsEvents, concerts, theatreEvents, generalEvents,
-  allEvents, venues, shows, mockBookings, plans,
+  allEvents, mockBookings, plans,
   adminStats, rateLimitPolicies
 } from '../data/mockData';
 
@@ -48,23 +54,64 @@ const delay = (ms = 400) => new Promise(resolve => setTimeout(resolve, ms));
 
 export { BASE_URL };
 
+// catalog-service's Content entity (database/migrations/0004) has no
+// image/banner/rating/cast/trending/featured/price/city/etc. columns at
+// all — only the fields below. Every other optional Content field (all of
+// them except `image`, which is the type's one *required* field) is left
+// undefined for real data; that's intentional, not an omission, and each
+// consuming component already guards those fields as optional.
+const PLACEHOLDER_IMAGE =
+  'data:image/svg+xml;charset=UTF-8,%3Csvg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600"%3E%3Crect width="400" height="600" fill="%231e1e2e"/%3E%3Ctext x="200" y="300" font-family="sans-serif" font-size="20" fill="%236b7280" text-anchor="middle"%3ENo image%3C/text%3E%3C/svg%3E';
+
+interface BackendContent {
+  id: string;
+  type: ContentType;
+  title: string;
+  description: string | null;
+  language: string | null;
+  duration: number | null;
+  genre: string | null;
+  releaseOrEventDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function toContent(c: BackendContent): Content {
+  return {
+    id: c.id,
+    type: c.type,
+    title: c.title,
+    description: c.description ?? '',
+    image: PLACEHOLDER_IMAGE,
+    language: c.language ?? undefined,
+    duration: c.duration ?? undefined,
+    genre: c.genre ?? undefined,
+    releaseDate: c.releaseOrEventDate ?? undefined,
+  };
+}
+
 // ─── Event / Content ─────────────────────────────────────────────────────────
 
+/**
+ * GET /api/catalog/content — catalog-service's full content list. There is
+ * no server-side `type`/filter query param (ContentController.list() takes
+ * none), so `type` and the rest of `filters` are applied client-side, same
+ * as the mock implementation this replaces. Most `filters` fields
+ * (city/genre/minRating/sport) match against Content properties the real
+ * backend doesn't populate (see {@link toContent}) and are effectively
+ * inert until/unless a future catalog phase adds them — no caller
+ * currently passes `filters`, so this is not a behavior change today.
+ */
 export async function getEvents(
   type?: ContentType,
   filters?: EventFilters
 ): Promise<Content[]> {
-  await delay();
-  let data: Content[];
-  switch (type) {
-    case 'MOVIE':       data = [...movies]; break;
-    case 'SPORTS_MATCH': data = [...sportsEvents]; break;
-    case 'CONCERT':     data = [...concerts]; break;
-    case 'THEATRE':     data = [...theatreEvents]; break;
-    case 'EVENT':       data = [...generalEvents]; break;
-    default:            data = [...allEvents];
-  }
+  const content = await request<BackendContent[]>('/api/catalog/content', { auth: true });
+  let data = content.map(toContent);
 
+  if (type) {
+    data = data.filter(e => e.type === type);
+  }
   if (filters?.city && filters.city !== 'All Cities') {
     data = data.filter(e => e.city === filters.city);
   }
@@ -84,11 +131,21 @@ export async function getEvents(
   return data;
 }
 
+/** GET /api/catalog/content/{id}. Returns null on 404, same as the mock it replaces. */
 export async function getEventById(id: string): Promise<Content | null> {
-  await delay(300);
-  return allEvents.find(e => e.id === id) || null;
+  try {
+    return toContent(await request<BackendContent>(`/api/catalog/content/${id}`, { auth: true }));
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
+// catalog-service's Content has no "trending"/"featured" concept at all —
+// there is no real signal to source this from (and no endpoint to invent),
+// so these two stay on mock data until/unless a future phase defines one.
+// Phase 2's own inspection requirement ("if actually supported") concluded
+// it is not; see this integration's own report for the full reasoning.
 export async function getTrendingEvents(): Promise<Content[]> {
   await delay(350);
   return allEvents.filter(e => e.trending).slice(0, 8);
@@ -101,26 +158,101 @@ export async function getFeaturedEvents(): Promise<Content[]> {
 
 // ─── Venues ──────────────────────────────────────────────────────────────────
 
-export async function getVenueById(id: string): Promise<Venue | null> {
-  await delay(200);
-  return venues.find(v => v.id === id) || null;
+// catalog-service's Venue entity (database/migrations/0005) has no state/
+// pincode/mapUrl/amenities/totalCapacity columns — those Venue fields stay
+// undefined for real data (all already optional on the frontend type).
+interface BackendVenueResponse {
+  id: string;
+  name: string;
+  address: string;
+  city: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
+function toVenue(v: BackendVenueResponse): Venue {
+  return { id: v.id, name: v.name, address: v.address, city: v.city };
+}
+
+/** GET /api/catalog/venues/{id}. Returns null on 404, same as the mock it replaces. */
+export async function getVenueById(id: string): Promise<Venue | null> {
+  try {
+    return toVenue(await request<BackendVenueResponse>(`/api/catalog/venues/${id}`, { auth: true }));
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * VenueController.list() has no `city` query param either — closest
+ * supported API is the full list, filtered client-side (exact match, same
+ * as the mock it replaces).
+ */
 export async function getVenuesByCity(city: string): Promise<Venue[]> {
-  await delay(200);
-  return venues.filter(v => v.city === city);
+  const list = await request<BackendVenueResponse[]>('/api/catalog/venues', { auth: true });
+  return list.filter(v => v.city === city).map(toVenue);
 }
 
 // ─── Shows ───────────────────────────────────────────────────────────────────
 
-export async function getShowsByEvent(contentId: string): Promise<Show[]> {
-  await delay(350);
-  return shows.filter(s => s.contentId === contentId);
+// catalog-service's Show entity (database/migrations/0007) has no
+// language/format/seatsAvailable/totalSeats columns — per-show seat
+// counts are booking-service's show_seats, a different service's data
+// this response doesn't carry. Those Show fields stay undefined for real
+// data (all already optional on the frontend type, already guarded by
+// every consumer). `available` is a direct, honest mapping of the real
+// `status` column, not an invented heuristic.
+interface BackendShowResponse {
+  id: string;
+  contentId: string;
+  venueId: string;
+  startTime: string;
+  endTime: string;
+  status: 'SCHEDULED' | 'CANCELLED' | 'COMPLETED';
+  createdAt: string;
+  updatedAt: string;
 }
 
+function toShow(s: BackendShowResponse): Show {
+  return {
+    id: s.id,
+    contentId: s.contentId,
+    venueId: s.venueId,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    date: s.startTime.slice(0, 10),
+    timeLabel: new Date(s.startTime).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }),
+    available: s.status === 'SCHEDULED',
+  };
+}
+
+/**
+ * ShowController.list() has no `contentId` query param (its own comment
+ * says so explicitly — {@code ShowService.listByContent} exists but isn't
+ * wired to any endpoint) — closest supported API is the full show list,
+ * filtered client-side. Not paginated; fine for this project's seed-data
+ * scale, same ceiling every other unpaginated list call here already has.
+ */
+export async function getShowsByEvent(contentId: string): Promise<Show[]> {
+  const list = await request<BackendShowResponse[]>('/api/catalog/shows', { auth: true });
+  return list.filter(s => s.contentId === contentId).map(toShow);
+}
+
+/**
+ * GET /api/catalog/shows/{id}. Returns null on 404, same as the mock it
+ * replaces. Deliberately separate from {@link getSeatMap}'s own internal
+ * `BackendShow`/request call against this same endpoint (it only needs
+ * `venueId`) — left as-is rather than refactored to share this, to avoid
+ * touching that already-working code for this integration.
+ */
 export async function getShowById(showId: string): Promise<Show | null> {
-  await delay(200);
-  return shows.find(s => s.id === showId) || null;
+  try {
+    return toShow(await request<BackendShowResponse>(`/api/catalog/shows/${showId}`, { auth: true }));
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 // ─── Seats ───────────────────────────────────────────────────────────────────

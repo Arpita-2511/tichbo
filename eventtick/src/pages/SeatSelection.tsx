@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Timer } from 'lucide-react';
+import { ArrowLeft, Timer, AlertTriangle } from 'lucide-react';
 import { getSeatMap, getEventById, getShowById, getVenueById, holdSeats, ApiError } from '../services/api';
 import { useApp } from '../context/AppContext';
 import type { Content, Show, Venue, Seat, SeatSection } from '../types';
@@ -23,6 +23,7 @@ export default function SeatSelection() {
   const [sections, setSections] = useState<SeatSection[]>([]);
   const [selectedSeats, setSelectedSeats] = useState<Seat[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Visual countdown only. The real backend hold (POST .../seats/hold, see
   // handleContinue) does not yet expire on its own — there is no Redis
   // TTL/expiration on a HELD show-seat yet, so this timer does not
@@ -35,21 +36,26 @@ export default function SeatSelection() {
   useEffect(() => {
     if (!showId) return;
     const loadData = async () => {
-      const [seatSections, fetchedShow] = await Promise.all([
-        getSeatMap(showId),
-        !show ? getShowById(showId) : Promise.resolve(show),
-      ]);
-      setSections(seatSections);
-      if (fetchedShow && !show) {
-        setShow(fetchedShow);
-        const [ev, vn] = await Promise.all([
-          !event ? getEventById(fetchedShow.contentId) : Promise.resolve(event),
-          !venue ? getVenueById(fetchedShow.venueId) : Promise.resolve(venue),
+      try {
+        const [seatSections, fetchedShow] = await Promise.all([
+          getSeatMap(showId),
+          !show ? getShowById(showId) : Promise.resolve(show),
         ]);
-        setEvent(ev);
-        setVenue(vn);
+        setSections(seatSections);
+        if (fetchedShow && !show) {
+          setShow(fetchedShow);
+          const [ev, vn] = await Promise.all([
+            !event ? getEventById(fetchedShow.contentId) : Promise.resolve(event),
+            !venue ? getVenueById(fetchedShow.venueId) : Promise.resolve(venue),
+          ]);
+          setEvent(ev);
+          setVenue(vn);
+        }
+      } catch (err) {
+        setLoadError(err instanceof ApiError ? err.message : 'Could not load this show. Please try again.');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     loadData();
   }, [showId]);
@@ -123,6 +129,13 @@ export default function SeatSelection() {
   const formatTimer = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loading /></div>;
+  if (loadError) return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-text-muted px-4 text-center">
+      <AlertTriangle size={24} className="text-warning" />
+      <p>{loadError}</p>
+      <button onClick={() => navigate(-1)} className="text-accent">Go Back</button>
+    </div>
+  );
 
   return (
     <div className="min-h-screen">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Trophy, Search } from 'lucide-react';
-import { getEvents } from '../services/api';
+import { Trophy, Search, AlertTriangle } from 'lucide-react';
+import { getEvents, ApiError } from '../services/api';
 import type { Content, EventFilters } from '../types';
 import EventCard from '../components/events/EventCard';
 import EventFiltersComponent from '../components/events/EventFilters';
@@ -16,10 +16,16 @@ export default function Sports() {
   const [filters, setFilters] = useState<EventFilters>({});
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [activeSport, setActiveSport] = useState('All');
 
   useEffect(() => {
-    getEvents('SPORTS_MATCH').then(data => { setEvents(data); setLoading(false); });
+    getEvents('SPORTS_MATCH')
+      .then(data => { setEvents(data); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load sports events. Please try again.');
+        setLoading(false);
+      });
   }, []);
 
   const sports = ['All', ...Array.from(new Set(events.map(e => e.sport).filter(Boolean) as string[]))];
@@ -82,6 +88,8 @@ export default function Sports() {
             <div key={i} className="h-32 bg-bg-tertiary animate-skeleton rounded-xl" />
           ))}
         </div>
+      ) : error ? (
+        <EmptyState title="Couldn't load sports events" description={error} icon={<AlertTriangle size={24} />} />
       ) : filtered.length === 0 ? (
         <EmptyState title="No sports events found" description="Try a different sport or date range." icon={<Trophy size={24} />} />
       ) : (

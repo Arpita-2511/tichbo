@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Music } from 'lucide-react';
-import { getEvents } from '../services/api';
+import { Music, AlertTriangle } from 'lucide-react';
+import { getEvents, ApiError } from '../services/api';
 import type { Content } from '../types';
 import EventCard from '../components/events/EventCard';
 import EmptyState from '../components/common/EmptyState';
@@ -9,9 +9,15 @@ import { EventCardSkeleton } from '../components/common/Loading';
 export default function Concerts() {
   const [events, setEvents] = useState<Content[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getEvents('CONCERT').then(data => { setEvents(data); setLoading(false); });
+    getEvents('CONCERT')
+      .then(data => { setEvents(data); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load concerts. Please try again.');
+        setLoading(false);
+      });
   }, []);
 
   return (
@@ -27,7 +33,7 @@ export default function Concerts() {
       </div>
 
       {/* Featured hero card */}
-      {!loading && events[0] && (
+      {!loading && !error && events[0] && (
         <div
           className="relative rounded-2xl overflow-hidden h-64 sm:h-80 mb-8 cursor-pointer group"
           onClick={() => window.location.href = `/event/${events[0].id}`}
@@ -47,6 +53,8 @@ export default function Concerts() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => <EventCardSkeleton key={i} />)}
         </div>
+      ) : error ? (
+        <EmptyState title="Couldn't load concerts" description={error} icon={<AlertTriangle size={24} />} />
       ) : events.length === 0 ? (
         <EmptyState title="No concerts found" icon={<Music size={24} />} />
       ) : (

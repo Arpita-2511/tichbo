@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Film, Search } from 'lucide-react';
-import { getEvents } from '../services/api';
+import { Film, Search, AlertTriangle } from 'lucide-react';
+import { getEvents, ApiError } from '../services/api';
 import type { Content, EventFilters } from '../types';
 import EventCard from '../components/events/EventCard';
 import EventFiltersComponent from '../components/events/EventFilters';
@@ -13,9 +13,15 @@ export default function Movies() {
   const [filters, setFilters] = useState<EventFilters>({});
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getEvents('MOVIE').then(data => { setAll(data); setLoading(false); });
+    getEvents('MOVIE')
+      .then(data => { setAll(data); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load movies. Please try again.');
+        setLoading(false);
+      });
   }, []);
 
   const nowShowing = all.filter(m => m.isReleased);
@@ -84,6 +90,8 @@ export default function Movies() {
       {/* Grid */}
       {loading ? (
         <EventGridSkeleton count={10} />
+      ) : error ? (
+        <EmptyState title="Couldn't load movies" description={error} icon={<AlertTriangle size={24} />} />
       ) : filtered.length === 0 ? (
         <EmptyState title="No movies found" description="Try adjusting your filters or search term." icon={<Film size={24} />} />
       ) : (

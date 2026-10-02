@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Calendar, Search } from 'lucide-react';
-import { getEvents } from '../services/api';
+import { Calendar, Search, AlertTriangle } from 'lucide-react';
+import { getEvents, ApiError } from '../services/api';
 import type { Content } from '../types';
 import EventCard from '../components/events/EventCard';
 import EmptyState from '../components/common/EmptyState';
@@ -11,11 +11,17 @@ const genres = ['All', 'Conference', 'Festival', 'Exhibition', 'Cultural Festiva
 export default function Events() {
   const [events, setEvents] = useState<Content[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [activeGenre, setActiveGenre] = useState('All');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    getEvents('EVENT').then(data => { setEvents(data); setLoading(false); });
+    getEvents('EVENT')
+      .then(data => { setEvents(data); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load events. Please try again.');
+        setLoading(false);
+      });
   }, []);
 
   const filtered = events.filter(e => {
@@ -69,6 +75,8 @@ export default function Events() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => <EventCardSkeleton key={i} />)}
         </div>
+      ) : error ? (
+        <EmptyState title="Couldn't load events" description={error} icon={<AlertTriangle size={24} />} />
       ) : filtered.length === 0 ? (
         <EmptyState title="No events found" description="Try changing your search or genre filter." icon={<Calendar size={24} />} />
       ) : (

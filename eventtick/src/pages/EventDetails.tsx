@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   MapPin, Calendar, Clock, Star, Share2, Heart, ChevronRight,
-  Globe, Shield, Info
+  Globe, Shield, Info, AlertTriangle
 } from 'lucide-react';
-import { getEventById, getShowsByEvent, getVenueById } from '../services/api';
+import { getEventById, getShowsByEvent, getVenueById, ApiError } from '../services/api';
 import type { Content, Show, Venue } from '../types';
 import Loading from '../components/common/Loading';
 
@@ -23,23 +23,30 @@ export default function EventDetails() {
   const [shows, setShows] = useState<Show[]>([]);
   const [venue, setVenue] = useState<Venue | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [selectedShow, setSelectedShow] = useState<Show | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!id) return;
-    Promise.all([getEventById(id), getShowsByEvent(id)]).then(async ([ev, sh]) => {
-      setEvent(ev);
-      setShows(sh);
-      if (sh.length > 0) {
-        setSelectedDate(sh[0].date);
-        // Load venue for first show
-        const v = await getVenueById(sh[0].venueId);
-        setVenue(v);
+    (async () => {
+      try {
+        const [ev, sh] = await Promise.all([getEventById(id), getShowsByEvent(id)]);
+        setEvent(ev);
+        setShows(sh);
+        if (sh.length > 0) {
+          setSelectedDate(sh[0].date);
+          // Load venue for first show
+          const v = await getVenueById(sh[0].venueId);
+          setVenue(v);
+        }
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Could not load this event. Please try again.');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
-    });
+    })();
   }, [id]);
 
   // Unique dates from shows
@@ -59,6 +66,13 @@ export default function EventDetails() {
   };
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loading /></div>;
+  if (error) return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-text-muted px-4 text-center">
+      <AlertTriangle size={24} className="text-warning" />
+      <p>{error}</p>
+      <a href="/" className="text-accent">Go Home</a>
+    </div>
+  );
   if (!event) return (
     <div className="min-h-screen flex items-center justify-center text-text-muted">
       Event not found. <a href="/" className="text-accent ml-2">Go Home</a>
@@ -198,7 +212,10 @@ export default function EventDetails() {
                   <MapPin size={16} className="text-accent-lighter" /> Venue
                 </h3>
                 <p className="text-text-primary font-medium">{venue.name}</p>
-                <p className="text-text-muted text-sm">{venue.address}, {venue.city}, {venue.state} - {venue.pincode}</p>
+                <p className="text-text-muted text-sm">
+                  {[venue.address, venue.city, venue.state].filter(Boolean).join(', ')}
+                  {venue.pincode ? ` - ${venue.pincode}` : ''}
+                </p>
                 {venue.amenities && (
                   <div className="flex flex-wrap gap-1.5 mt-3">
                     {venue.amenities.map(a => (

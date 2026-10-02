@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Theater } from 'lucide-react';
-import { getEvents } from '../services/api';
+import { Theater, AlertTriangle } from 'lucide-react';
+import { getEvents, ApiError } from '../services/api';
 import type { Content } from '../types';
 import EventCard from '../components/events/EventCard';
 import EmptyState from '../components/common/EmptyState';
@@ -11,10 +11,16 @@ const genres = ['All', 'Musical', 'Drama', 'Stand-Up Comedy', 'Classical Drama',
 export default function Theatre() {
   const [events, setEvents] = useState<Content[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [activeGenre, setActiveGenre] = useState('All');
 
   useEffect(() => {
-    getEvents('THEATRE').then(data => { setEvents(data); setLoading(false); });
+    getEvents('THEATRE')
+      .then(data => { setEvents(data); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load theatre events. Please try again.');
+        setLoading(false);
+      });
   }, []);
 
   const filtered = activeGenre === 'All'
@@ -53,6 +59,8 @@ export default function Theatre() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => <EventCardSkeleton key={i} />)}
         </div>
+      ) : error ? (
+        <EmptyState title="Couldn't load theatre events" description={error} icon={<AlertTriangle size={24} />} />
       ) : filtered.length === 0 ? (
         <EmptyState title="No theatre events found" icon={<Theater size={24} />} />
       ) : (

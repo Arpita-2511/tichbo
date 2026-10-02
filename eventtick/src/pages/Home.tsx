@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Search, MapPin, ArrowRight, Star,
-  Shield, Zap, HeadphonesIcon, Award, Sparkles
+  Shield, Zap, HeadphonesIcon, Award, Sparkles, AlertTriangle
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { getTrendingEvents, getEvents } from '../services/api';
+import { getTrendingEvents, getEvents, ApiError } from '../services/api';
 import type { Content } from '../types';
 import EventCard from '../components/events/EventCard';
 import { CategoryNav } from '../components/events/EventCategoryCard';
@@ -52,6 +52,7 @@ export default function Home() {
   const [concerts, setConcerts] = useState<Content[]>([]);
   const [theatre, setTheatre] = useState<Content[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setHeroIndex(i => (i + 1) % heroImages.length), 5000);
@@ -71,6 +72,9 @@ export default function Home() {
       setSports(s.slice(0, 6));
       setConcerts(c.slice(0, 5));
       setTheatre(th.slice(0, 5));
+      setLoading(false);
+    }).catch(err => {
+      setError(err instanceof ApiError ? err.message : 'Could not load events. Please try again.');
       setLoading(false);
     });
   }, []);
@@ -159,6 +163,12 @@ export default function Home() {
       </section>
 
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-10 space-y-14">
+        {error && (
+          <div className="flex items-center gap-2 text-warning text-sm bg-warning/10 border border-warning/30 rounded-xl px-4 py-3">
+            <AlertTriangle size={16} className="flex-shrink-0" /> {error}
+          </div>
+        )}
+
         {/* ── CATEGORIES ─────────────────────────────────────────────────── */}
         <section>
           <SectionHeader title="Explore by Category" subtitle="What are you looking for today?" />
