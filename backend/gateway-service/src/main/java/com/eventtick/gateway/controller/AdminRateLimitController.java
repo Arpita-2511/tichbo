@@ -1,76 +1,152 @@
 package com.eventtick.gateway.controller;
 
+import com.eventtick.gateway.ratelimit.DynamicPolicyService;
+import com.eventtick.gateway.ratelimit.DynamicRateLimitPolicy;
 import com.eventtick.gateway.ratelimit.RateLimitActivityRecorder;
 import com.eventtick.gateway.ratelimit.RateLimitPolicyProperties;
-import com.eventtick.gateway.ratelimit.RequestCategory;
-import com.eventtick.gateway.ratelimit.UserTier;
+import com.eventtick.gateway.ratelimit.dto.CreatePolicyRequest;
+import com.eventtick.gateway.ratelimit.dto.PolicyResponse;
 import com.eventtick.gateway.ratelimit.dto.RateLimitPolicyDto;
 import com.eventtick.gateway.ratelimit.dto.RateLimitStatsResponse;
+import com.eventtick.gateway.ratelimit.dto.UpdatePolicyRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * FR-40: {@code GET /api/admin/rate-limits/stats} — the first REST endpoint
- * gateway-service serves <b>locally</b> rather than proxying. Deliberately
- * has no corresponding {@code application.yml} route: this class answers
- * the request directly, so nothing is forwarded anywhere.
- *
- * <p><b>Authorization:</b> the existing {@code /api/admin/** -> hasAuthority("ROLE_ADMIN")}
- * rule in {@code GatewaySecurityConfig} already applies here unchanged — it
- * is enforced by the reactive {@code SecurityWebFilterChain}, which runs
- * ahead of route/handler resolution regardless of whether a request is
- * ultimately served by a proxied route or, as here, a local
- * {@code @RestController}. No new security configuration is added.
- *
- * <p>Reuses existing state only: {@link RateLimitPolicyProperties} (already
- * loaded from {@code application.yml} at startup — nothing here is
- * hardcoded) and {@link RateLimitActivityRecorder} (FR-40's new, Redis-backed
- * counters). No new service and no admin-service.
+ * Phase 19: admin CRUD for dynamic rate-limit policies, plus the existing
+ * FR-40 stats endpoint. All endpoints are under {@code /api/admin/**} and
+ * therefore require {@code ROLE_ADMIN} via {@code GatewaySecurityConfig}.
  */
 @RestController
 public class AdminRateLimitController {
 
-    /** Must match {@code RateLimitPolicyResolver.FALLBACK_POLICY_ID} (package-private; not modified for this endpoint). */
     private static final String FALLBACK_POLICY_ID = "FALLBACK";
 
-    private final RateLimitPolicyProperties policyProperties;
+    private final DynamicPolicyService policyService;
+    private final RateLimitPolicyProperties staticProperties;
     private final RateLimitActivityRecorder activityRecorder;
 
-    public AdminRateLimitController(RateLimitPolicyProperties policyProperties,
+    public AdminRateLimitController(DynamicPolicyService policyService,
+                                     RateLimitPolicyProperties staticProperties,
                                      RateLimitActivityRecorder activityRecorder) {
-        this.policyProperties = policyProperties;
+        this.policyService = policyService;
+        this.staticProperties = staticProperties;
         this.activityRecorder = activityRecorder;
     }
+
+    // --- Policy CRUD ---
+
+    @GetMapping("/api/admin/rate-limits/policies")
+    public Mono<List<PolicyResponse>> listPolicies() {
+        return policyService.findAll()
+                .map(PolicyResponse::from)
+                .sort(Comparator.comparing(PolicyResponse::category).thenComparing(PolicyResponse::tier))
+                .collectList();
+    }
+
+    @PostMapping("/api/admin/rate-limits/policies")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Mono<PolicyResponse> createPolicy(@RequestBody CreatePolicyRequest request) {
+        validateCategory(request.category());
+        validateTier(request.tier());
+        validateRates(request.replenishRate(), request.burstCapacity(), request.requestedTokens());
+
+        return policyService.create(request.category(), request.tier(),
+                        request.replenishRate(), request.burstCapacity(),
+                        request.requestedTokens() > 0 ? request.requestedTokens() : 1)
+                .map(PolicyResponse::from)
+                .onErrorResume(DynamicPolicyService.DuplicatePolicyException.class,
+                        e -> Mono.error(new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage())));
+    }
+
+    @PutMapping("/api/admin/rate-limits/policies/{id}")
+    public Mono<PolicyResponse> updatePolicy(@PathVariable String id, @RequestBody UpdatePolicyRequest request) {
+        validateRates(request.replenishRate(), request.burstCapacity(), request.requestedTokens());
+
+        return policyService.update(id, request.replenishRate(), request.burstCapacity(),
+                        request.requestedTokens() > 0 ? request.requestedTokens() : 1, request.enabled())
+                .map(PolicyResponse::from)
+                .onErrorResume(DynamicPolicyService.PolicyNotFoundException.class,
+                        e -> Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage())));
+    }
+
+    @DeleteMapping("/api/admin/rate-limits/policies/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public Mono<Void> deletePolicy(@PathVariable String id) {
+        return policyService.delete(id)
+                .onErrorResume(DynamicPolicyService.PolicyNotFoundException.class,
+                        e -> Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage())));
+    }
+
+    // --- Stats (FR-40, updated for dynamic policies) ---
 
     @GetMapping("/api/admin/rate-limits/stats")
     public Mono<RateLimitStatsResponse> stats() {
         Map<String, Map<String, RateLimitPolicyDto>> policies = new LinkedHashMap<>();
         List<String> policyIds = new ArrayList<>();
 
-        for (Map.Entry<RequestCategory, Map<UserTier, RateLimitPolicyProperties.PolicyValues>> byCategory
-                : policyProperties.getPolicies().entrySet()) {
-            Map<String, RateLimitPolicyDto> byTier = new LinkedHashMap<>();
-            for (Map.Entry<UserTier, RateLimitPolicyProperties.PolicyValues> byTierEntry : byCategory.getValue().entrySet()) {
-                byTier.put(byTierEntry.getKey().name(), toDto(byTierEntry.getValue()));
-                policyIds.add(byCategory.getKey().name() + ":" + byTierEntry.getKey().name());
-            }
-            policies.put(byCategory.getKey().name(), byTier);
-        }
+        Map<String, DynamicRateLimitPolicy> snapshot = policyService.getCacheSnapshot();
+        snapshot.values().stream()
+                .sorted(Comparator.comparing(DynamicRateLimitPolicy::getCategory)
+                        .thenComparing(DynamicRateLimitPolicy::getTier))
+                .forEach(p -> {
+                    policies.computeIfAbsent(p.getCategory(), k -> new LinkedHashMap<>())
+                            .put(p.getTier(), new RateLimitPolicyDto(p.getReplenishRate(), p.getBurstCapacity(), p.getRequestedTokens()));
+                    if (p.isEnabled()) {
+                        policyIds.add(p.policyKey());
+                    }
+                });
         policyIds.add(FALLBACK_POLICY_ID);
 
-        RateLimitPolicyDto fallback = toDto(policyProperties.getFallback());
+        RateLimitPolicyDto fallback = new RateLimitPolicyDto(
+                staticProperties.getFallback().getReplenishRate(),
+                staticProperties.getFallback().getBurstCapacity(),
+                staticProperties.getFallback().getRequestedTokens());
 
         return activityRecorder.readActivitySection(policyIds)
                 .map(activity -> new RateLimitStatsResponse(policies, fallback, activity));
     }
 
-    private static RateLimitPolicyDto toDto(RateLimitPolicyProperties.PolicyValues values) {
-        return new RateLimitPolicyDto(values.getReplenishRate(), values.getBurstCapacity(), values.getRequestedTokens());
+    // --- Validation ---
+
+    private void validateCategory(String category) {
+        if (category == null || !DynamicPolicyService.VALID_CATEGORIES.contains(category)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Invalid category: " + category + ". Valid: " + DynamicPolicyService.VALID_CATEGORIES);
+        }
+    }
+
+    private void validateTier(String tier) {
+        if (tier == null || !DynamicPolicyService.VALID_TIERS.contains(tier)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Invalid tier: " + tier + ". Valid: " + DynamicPolicyService.VALID_TIERS);
+        }
+    }
+
+    private void validateRates(int replenishRate, int burstCapacity, int requestedTokens) {
+        if (replenishRate < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "replenishRate must be >= 1");
+        }
+        if (burstCapacity < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "burstCapacity must be >= 1");
+        }
+        if (requestedTokens < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "requestedTokens must be >= 0");
+        }
     }
 }

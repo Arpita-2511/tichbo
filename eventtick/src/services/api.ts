@@ -35,7 +35,7 @@ import type {
 
 import {
   allEvents, mockBookings, plans,
-  adminStats, rateLimitPolicies
+  adminStats
 } from '../data/mockData';
 
 // ─── API Client Configuration ─────────────────────────────────────────────────
@@ -604,7 +604,7 @@ interface BackendError { error?: string; message?: string }
 
 async function request<T>(
   path: string,
-  options: { method?: 'GET' | 'POST'; body?: unknown; auth?: boolean } = {},
+  options: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; auth?: boolean } = {},
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -636,6 +636,7 @@ async function request<T>(
     throw new ApiError(response.status, message, err?.error);
   }
 
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -738,9 +739,47 @@ export async function getAdminStats(): Promise<AdminStats> {
   return adminStats;
 }
 
-export async function getRateLimitPolicies() {
-  await delay(300);
-  return rateLimitPolicies;
+// Phase 19: real dynamic rate-limit policy CRUD — replaces the mock
+// implementation. These hit the Gateway's own admin endpoints, not a
+// downstream service.
+
+export interface DynamicPolicyResponse {
+  id: string;
+  category: string;
+  tier: string;
+  replenishRate: number;
+  burstCapacity: number;
+  requestedTokens: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getRateLimitPolicies(): Promise<DynamicPolicyResponse[]> {
+  return request<DynamicPolicyResponse[]>('/api/admin/rate-limits/policies', { auth: true });
+}
+
+export async function createRateLimitPolicy(policy: {
+  category: string; tier: string;
+  replenishRate: number; burstCapacity: number; requestedTokens: number;
+}): Promise<DynamicPolicyResponse> {
+  return request<DynamicPolicyResponse>('/api/admin/rate-limits/policies', {
+    method: 'POST', body: policy, auth: true,
+  });
+}
+
+export async function updateRateLimitPolicy(id: string, policy: {
+  replenishRate: number; burstCapacity: number; requestedTokens: number; enabled: boolean;
+}): Promise<DynamicPolicyResponse> {
+  return request<DynamicPolicyResponse>(`/api/admin/rate-limits/policies/${id}`, {
+    method: 'PUT', body: policy, auth: true,
+  });
+}
+
+export async function deleteRateLimitPolicy(id: string): Promise<void> {
+  return request<void>(`/api/admin/rate-limits/policies/${id}`, {
+    method: 'DELETE', auth: true,
+  });
 }
 
 // FR-40 (Phase 13): the real Gateway Rate-Limit Visibility endpoint — a

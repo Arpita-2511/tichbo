@@ -4,6 +4,7 @@ import com.eventtick.gateway.ratelimit.RateLimitPolicyProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point for the Eventtick API Gateway.
@@ -19,6 +20,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  */
 @SpringBootApplication
 @EnableConfigurationProperties(RateLimitPolicyProperties.class)
+@EnableScheduling
 public class GatewayServiceApplication {
 
     public static void main(String[] args) {

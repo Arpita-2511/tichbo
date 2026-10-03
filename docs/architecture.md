@@ -1107,61 +1107,82 @@ The actual numeric values will be determined during implementation and testing.
 
 ---
 
-# 22. Dynamic Policy Management
+# 22. Dynamic Policy Management (Phase 19)
 
-**Not implemented** — see §20.1. The flow below is the original Phase 1
-design; the real Phase 12 implementation stops at "policy chosen per
-request from configuration," with no PostgreSQL-backed policy store, no
-admin update path, and no runtime refresh.
+**Implemented.** Rate-limit policies are stored in Redis Hashes and
+managed through an admin CRUD API. Changes take effect immediately on the
+running Gateway — no restart, rebuild, or configuration reload required.
 
-The important distinction is:
-
-```text
-Static Rate Limiting
-
-Limit exists in application configuration
-```
-
-versus:
+## Architecture
 
 ```text
-Dynamic Rate Limiting
-
-Policy stored persistently
-        ↓
-Gateway loads policy
-        ↓
-Policy can change at runtime
-        ↓
-Gateway applies updated policy
+Admin (browser)
+  │  CRUD via /api/admin/rate-limits/policies
+  ▼
+AdminRateLimitController  (ROLE_ADMIN required)
+  │
+  ▼
+DynamicPolicyService
+  ├── Redis Hash persistence  (source of truth)
+  ├── ConcurrentHashMap cache  (in-memory, updated on every write)
+  ├── @Scheduled 30s refresh   (guards against multi-instance drift)
+  └── RedisRateLimiter.getConfig().put()  (hot reload — immediate)
+  │
+  ▼
+RateLimitPolicyResolver  reads from DynamicPolicyService cache
+  │
+  ▼
+RateLimitingGlobalFilter  calls RedisRateLimiter.isAllowed()
 ```
 
-An administrator can modify policy parameters without rebuilding the Gateway.
+## Persistence
 
-A simplified update flow:
+Policies are stored as Redis Hashes under `gateway:rate-limit-policies:{category}:{tier}`.
+An index Hash at `gateway:rate-limit-policies:index` maps policy UUIDs to
+their category:tier keys. No PostgreSQL is involved — the Gateway is a
+reactive (WebFlux) application with no JPA dependency.
 
-```text
-Admin
-  │
-  ▼
-User/Admin Service
-  │
-  ▼
-PostgreSQL
-  │
-  ▼
-Updated Policy
-  │
-  ▼
-Gateway Policy Refresh
-  │
-  ▼
-New Rate-Limit Behavior
-```
+## Hot reload mechanism
 
-The Gateway can maintain an in-memory policy snapshot to avoid querying PostgreSQL on every request.
+`DynamicPolicyService.registerOnLimiter()` directly updates
+`RedisRateLimiter.getConfig()` (a mutable `ConcurrentHashMap`) after every
+create, update, or delete. The next request through `RateLimitingGlobalFilter`
+picks up the new config immediately — the same JVM, the same bean, no
+restart.
 
-Redis remains responsible for rapidly changing limiter state.
+## Consistency model
+
+- **Redis** is the source of truth.
+- **ConcurrentHashMap** is the in-memory cache, updated synchronously after
+  every successful Redis write and refreshed every 30 seconds via `@Scheduled`.
+- **application.yml** provides seed defaults: on first startup (empty Redis),
+  the static policy matrix is seeded into Redis and the cache.
+
+## Fail-open behavior
+
+If Redis is unreachable at startup, `DynamicPolicyService.initialize()`
+catches the error and seeds the in-memory cache directly from
+`application.yml`. The periodic refresh also catches Redis errors and
+preserves the existing cache. This matches the Gateway's existing
+fail-open pattern: Redis unavailability never causes a full outage.
+
+## Request categories
+
+Six categories are classified by path prefix:
+`AUTH`, `CATALOG`, `BOOKING`, `USER`, `PAYMENT`, `ADMIN`.
+Unrecognized paths resolve to `UNKNOWN` → fallback policy.
+
+## CORS
+
+PUT and DELETE are allowed in the CORS configuration to support the
+admin CRUD API from the browser frontend.
+
+## Frontend
+
+The Admin Dashboard's rate-limit policy section uses the real CRUD API
+(GET/POST/PUT/DELETE) via `RateLimitPolicyManager`, replacing the
+previous mock data. Inline editing, creation, deletion, enable/disable,
+validation feedback, and error handling are all implemented.
 
 ---
 

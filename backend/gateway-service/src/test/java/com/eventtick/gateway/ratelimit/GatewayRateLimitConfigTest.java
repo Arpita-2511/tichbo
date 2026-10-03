@@ -35,7 +35,7 @@ class GatewayRateLimitConfigTest {
 
     @Test
     void catalogBookingAndUser_eachHaveAllFourAuthenticatedTiers_andNoPublicEntry() {
-        for (RequestCategory category : new RequestCategory[]{RequestCategory.CATALOG, RequestCategory.BOOKING, RequestCategory.USER}) {
+        for (RequestCategory category : new RequestCategory[]{RequestCategory.CATALOG, RequestCategory.BOOKING, RequestCategory.USER, RequestCategory.PAYMENT}) {
             assertThat(properties.getPolicies().get(category).keySet())
                     .as("category %s", category)
                     .containsExactlyInAnyOrder(UserTier.FREE, UserTier.PRO, UserTier.PREMIUM, UserTier.ADMIN);
@@ -44,7 +44,7 @@ class GatewayRateLimitConfigTest {
 
     @Test
     void higherTiers_areStrictlyMoreGenerous_withinEachAuthenticatedCategory() {
-        for (RequestCategory category : new RequestCategory[]{RequestCategory.CATALOG, RequestCategory.BOOKING, RequestCategory.USER}) {
+        for (RequestCategory category : new RequestCategory[]{RequestCategory.CATALOG, RequestCategory.BOOKING, RequestCategory.USER, RequestCategory.PAYMENT}) {
             var byTier = properties.getPolicies().get(category);
             int free = byTier.get(UserTier.FREE).getReplenishRate();
             int pro = byTier.get(UserTier.PRO).getReplenishRate();
@@ -73,7 +73,7 @@ class GatewayRateLimitConfigTest {
             assertThat(registered.getBurstCapacity()).isEqualTo(policy.burstCapacity());
             assertThat(registered.getRequestedTokens()).isEqualTo(policy.requestedTokens());
         }
-        // AUTH:PUBLIC, {CATALOG,BOOKING,USER}x{FREE,PRO,PREMIUM,ADMIN}, FALLBACK.
-        assertThat(resolver.allConfiguredPolicies()).hasSize(1 + 3 * 4 + 1);
+        // AUTH:PUBLIC, {CATALOG,BOOKING,USER,PAYMENT}x{FREE,PRO,PREMIUM,ADMIN}, ADMIN:ADMIN, FALLBACK.
+        assertThat(resolver.allConfiguredPolicies()).hasSize(1 + 4 * 4 + 1 + 1);
     }
 }

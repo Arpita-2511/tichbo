@@ -605,11 +605,12 @@ in `backend/gateway-service` (`com.eventtick.gateway.ratelimit`):
   API route groups" and "configured policies" (plural) are real: four
   request categories (`AUTH`/`CATALOG`/`BOOKING`/`USER`, path-based — see
   `RequestCategoryClassifier`), each with its own policy per tier.
-* **FR-27** (dynamic rate limiting) — **implemented for the "vary by
-  plan/route group/request type" part.** The policy resolved for a request
-  depends on its category (route group) and the caller's plan/role (from
-  the validated JWT) — see `RateLimitPolicyResolver`. **Not implemented**:
-  "administrative configuration" as a policy dimension — see FR-31.
+* **FR-27** (dynamic rate limiting) — **implemented.** The policy resolved
+  for a request depends on its category (route group) and the caller's
+  plan/role (from the validated JWT) — see `RateLimitPolicyResolver`.
+  Phase 19 added runtime administrative configuration: policies are stored
+  in Redis, served from an in-memory cache, and updated via the admin CRUD
+  API without restarting the Gateway (hot reload).
 * **FR-28** (shared rate-limit state) — implemented: the state is Redis, so
   multiple Gateway instances correctly share one allowance per key. Phase
   12 additionally had to fold the policy id into that key
@@ -624,27 +625,25 @@ in `backend/gateway-service` (`com.eventtick.gateway.ratelimit`):
 * **FR-30** (rate-limit response) — implemented: `HTTP 429`. No retry
   guidance is included in the body yet, beyond the standard
   `X-RateLimit-*` headers.
-* **FR-31** (administrative rate-limit configuration) — **not
-  implemented.** Policy values (now a full category × tier matrix) are read
-  from configuration/environment variables at startup; there is no
-  runtime/admin-configurable policy store and no way to change a policy
-  without restarting the Gateway. Explicitly Phase 13+ (and the Admin
-  Dashboard phase).
+* **FR-31** (administrative rate-limit configuration) — **implemented
+  (Phase 19).** Admin CRUD API at `/api/admin/rate-limits/policies`
+  (GET/POST/PUT/DELETE), requiring `ROLE_ADMIN`. Policies are persisted in
+  Redis Hashes, cached in a `ConcurrentHashMap`, and hot-reloaded onto the
+  `RedisRateLimiter` config map on every write — no Gateway restart needed.
+  The frontend Admin Dashboard provides a full CRUD UI for policy
+  management, replacing the previous mock data.
 * **FR-32** (rate-limit failure handling) — implemented, with an
   explicit, documented policy: if Redis is unreachable, the limiter fails
   open (requests are allowed, not blocked) rather than silently bypassing
   the *concept* of a failure policy — see `docs/architecture.md`'s Phase 12
   section for the reasoning. Unchanged since Phase 11.
-* **Classification coverage gap (confirmed, not yet closed).**
-  `RequestCategoryClassifier` recognizes exactly four categories
-  (`AUTH`/`CATALOG`/`BOOKING`/`USER`) by path prefix. `/api/payments/**`
-  (added Phase 15) and `/api/admin/**` (added Phase 13) match none of
-  them and resolve to `UNKNOWN`, which — per the classifier's own
-  documented contract — always falls back to the fixed, conservative
-  fallback policy rather than going unlimited. This is a real gap (no
-  dedicated `PAYMENT`/`ADMIN` category or tier-aware policy exists for
-  either path group yet), not a missing *safety* mechanism — both are
-  still rate-limited, just coarsely. See `docs/architecture.md` §20.1.
+* **Classification coverage (Phase 19: closed).**
+  `RequestCategoryClassifier` now recognizes six categories:
+  `AUTH`/`CATALOG`/`BOOKING`/`USER`/`PAYMENT`/`ADMIN` by path prefix.
+  `PAYMENT` covers `/api/payments/**`, `ADMIN` covers `/api/admin/**`.
+  Each has its own tier-aware policy matrix in `application.yml` and in the
+  dynamic policy store. Unrecognized paths still fall back to the
+  conservative fallback policy.
 
 ## FR-26: API Rate Limiting
 

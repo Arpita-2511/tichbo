@@ -25,6 +25,12 @@ final class RequestCategoryClassifier {
         if (path.startsWith("/api/users/") || path.equals("/api/users")) {
             return RequestCategory.USER;
         }
+        if (path.startsWith("/api/payments/") || path.equals("/api/payments")) {
+            return RequestCategory.PAYMENT;
+        }
+        if (path.startsWith("/api/admin/")) {
+            return RequestCategory.ADMIN;
+        }
         return RequestCategory.UNKNOWN;
     }
 }

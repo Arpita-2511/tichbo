@@ -23,6 +23,12 @@ public enum RequestCategory {
     /** {@code /api/users/**} — the authenticated user's own account. */
     USER,
 
+    /** {@code /api/payments/**} — payment creation and status. */
+    PAYMENT,
+
+    /** {@code /api/admin/**} — all admin management endpoints. */
+    ADMIN,
+
     /**
      * Anything not matching one of the above. Not the same as "no route
      * matched at all" (that is a 404 before this ever runs) — this is for a

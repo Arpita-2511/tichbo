@@ -18,13 +18,16 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the combined (category, tier) resolution and the fallback
- * behavior — built with a real, small, in-memory {@link RateLimitPolicyProperties}
- * rather than a Spring context, so it runs without booting the gateway
- * (see {@code GatewayRateLimitTest}/{@code GatewayRateLimitConfigTest} for
- * the end-to-end and full-matrix coverage).
+ * behavior — built with a real, small, in-memory policy set rather than a
+ * Spring context, so it runs without booting the gateway. The
+ * {@link DynamicPolicyService} is mocked to return values from the test's
+ * own properties, simulating a populated dynamic cache.
  */
 class RateLimitPolicyResolverTest {
 
@@ -41,7 +44,16 @@ class RateLimitPolicyResolverTest {
         properties.setPolicies(policies);
         properties.setFallback(values(1, 1));
 
-        resolver = new RateLimitPolicyResolver(properties, new UserTierResolver());
+        DynamicPolicyService dynamicService = mock(DynamicPolicyService.class);
+        when(dynamicService.lookupPolicy(any(), any())).thenAnswer(invocation -> {
+            RequestCategory cat = invocation.getArgument(0);
+            UserTier tier = invocation.getArgument(1);
+            Map<UserTier, RateLimitPolicyProperties.PolicyValues> byTier = properties.getPolicies().get(cat);
+            return byTier == null ? null : byTier.get(tier);
+        });
+        when(dynamicService.getCacheSnapshot()).thenReturn(Map.of());
+
+        resolver = new RateLimitPolicyResolver(properties, dynamicService, new UserTierResolver());
     }
 
     private static RateLimitPolicyProperties.PolicyValues values(int replenishRate, int burstCapacity) {
@@ -95,8 +107,6 @@ class RateLimitPolicyResolverTest {
 
     @Test
     void unknownPath_resolvesTheFallbackPolicy_withoutEverCheckingAuthentication() {
-        // No security context written at all — if the resolver tried to read
-        // one for an UNKNOWN path, this would error instead of completing.
         RateLimitPolicy policy = resolver.resolve(exchangeFor("/api/does-not-exist")).block();
 
         assertThat(policy.id()).isEqualTo(RateLimitPolicyResolver.FALLBACK_POLICY_ID);
@@ -105,17 +115,31 @@ class RateLimitPolicyResolverTest {
 
     @Test
     void aConfiguredCategoryWithAnUnconfiguredTier_fallsBackRatherThanErroring() {
-        // BOOKING has no entries at all in this test's properties.
         RateLimitPolicy policy = resolveAs(resolver, "/api/bookings", "CUSTOMER", "Free").block();
 
         assertThat(policy.id()).isEqualTo(RateLimitPolicyResolver.FALLBACK_POLICY_ID);
     }
 
     @Test
-    void allConfiguredPolicies_includesEveryMatrixEntry_andTheFallback() {
+    void allConfiguredPolicies_includesTheFallback() {
         List<String> ids = resolver.allConfiguredPolicies().stream().map(RateLimitPolicy::id).toList();
 
-        assertThat(ids).containsExactlyInAnyOrder(
-                "AUTH:PUBLIC", "CATALOG:FREE", "CATALOG:PRO", RateLimitPolicyResolver.FALLBACK_POLICY_ID);
+        assertThat(ids).contains(RateLimitPolicyResolver.FALLBACK_POLICY_ID);
+    }
+
+    @Test
+    void paymentCategory_resolvedCorrectly() {
+        RateLimitPolicy policy = resolver.resolve(exchangeFor("/api/payments")).block();
+
+        // No PAYMENT policy configured in this test's mock → fallback
+        assertThat(policy.id()).isEqualTo(RateLimitPolicyResolver.FALLBACK_POLICY_ID);
+    }
+
+    @Test
+    void adminCategory_resolvedCorrectly() {
+        RateLimitPolicy policy = resolveAs(resolver, "/api/admin/something", "ADMIN", "Free").block();
+
+        // No ADMIN policy configured in this test's mock → fallback
+        assertThat(policy.id()).isEqualTo(RateLimitPolicyResolver.FALLBACK_POLICY_ID);
     }
 }

@@ -111,15 +111,15 @@ public class RateLimitingGlobalFilter implements WebFilter, Ordered {
     }
 
     /**
-     * Registers every policy {@link RateLimitPolicyResolver} can resolve —
-     * see the class Javadoc for why this is required at all. Done once, up
-     * front, rather than lazily on first use, so a request is never the
-     * first thing to discover a matrix entry is missing.
+     * Registers the fallback policy and any policies the
+     * {@link DynamicPolicyService} loaded from Redis (or seeded from
+     * application.yml). Dynamic policies are registered by the service
+     * itself; this ensures the fallback is always present.
      */
     @PostConstruct
     void registerPolicies() {
         policyResolver.allConfiguredPolicies().forEach(policy ->
-                rateLimiter.getConfig().put(policy.id(), new RedisRateLimiter.Config()
+                rateLimiter.getConfig().putIfAbsent(policy.id(), new RedisRateLimiter.Config()
                         .setReplenishRate(policy.replenishRate())
                         .setBurstCapacity(policy.burstCapacity())
                         .setRequestedTokens(policy.requestedTokens())));

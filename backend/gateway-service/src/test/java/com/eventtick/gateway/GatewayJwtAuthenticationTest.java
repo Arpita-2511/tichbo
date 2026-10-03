@@ -341,7 +341,7 @@ class GatewayJwtAuthenticationTest {
                 .exchange()
                 .expectStatus().isOk()
                 .expectHeader().valueEquals("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
-                .expectHeader().valueEquals("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+                .expectHeader().valueEquals("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
 
         assertThat(received).isEmpty();
     }

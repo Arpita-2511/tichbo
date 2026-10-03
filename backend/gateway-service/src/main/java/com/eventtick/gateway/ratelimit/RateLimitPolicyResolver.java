@@ -9,43 +9,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Phase 12: picks which {@link RateLimitPolicy} applies to a request,
- * instead of Phase 11's single static one.
+ * Phase 12 / Phase 19: picks which {@link RateLimitPolicy} applies to a
+ * request. Phase 19 changed the policy source from static
+ * {@link RateLimitPolicyProperties} to the {@link DynamicPolicyService}'s
+ * in-memory cache, which is backed by Redis and updated at runtime by
+ * admin CRUD operations. The fallback policy still comes from
+ * {@code application.yml} and is always available.
  *
- * <p><b>Resolution precedence</b> — two independent inputs, category and
- * tier, are each resolved on their own and then looked up together:
- * <ol>
- *   <li><b>Request category</b> ({@link RequestCategoryClassifier}, from the
- *   path alone) — {@link RequestCategory#UNKNOWN} short-circuits straight to
- *   the fallback policy; there is no per-tier variant of "we don't recognize
- *   this endpoint".
- *   <li><b>Authentication state</b> — no validated JWT -> {@link UserTier#PUBLIC}.
- *   <li><b>Role</b> — {@code role=ADMIN} -> {@link UserTier#ADMIN}, checked
- *   <i>before</i> plan (see {@link UserTier}'s Javadoc for why role and plan
- *   are independent, and {@link UserTierResolver} for the exact claim
- *   handling).
- *   <li><b>Plan</b> — otherwise, the {@code plan} claim, defaulting to
- *   {@link UserTier#FREE} if missing or unrecognized.
- *   <li><b>Fallback</b> — if the resolved (category, tier) pair has no
- *   configured policy (most of today's matrix only defines
- *   {@code AUTH -> PUBLIC} and {@code CATALOG/BOOKING/USER -> FREE/PRO/PREMIUM/ADMIN};
- *   see {@code application.yml} for exactly which combinations exist and
- *   why the rest are intentionally absent), the one configured
- *   {@code eventtick.rate-limit.fallback} policy is used. This is a
- *   deliberately conservative, always-defined policy — a gap in the matrix
- *   degrades to a strict limit, never to "no limit".
- * </ol>
+ * <p><b>Resolution precedence</b> is unchanged from Phase 12:
+ * category (from path) + tier (from JWT) → dynamic cache lookup →
+ * fallback if no matching policy exists or the policy is disabled.
  */
 @Component
 class RateLimitPolicyResolver {
 
     static final String FALLBACK_POLICY_ID = "FALLBACK";
 
-    private final RateLimitPolicyProperties properties;
+    private final RateLimitPolicyProperties staticProperties;
+    private final DynamicPolicyService dynamicPolicyService;
     private final UserTierResolver tierResolver;
 
-    RateLimitPolicyResolver(RateLimitPolicyProperties properties, UserTierResolver tierResolver) {
-        this.properties = properties;
+    RateLimitPolicyResolver(RateLimitPolicyProperties staticProperties,
+                             DynamicPolicyService dynamicPolicyService,
+                             UserTierResolver tierResolver) {
+        this.staticProperties = staticProperties;
+        this.dynamicPolicyService = dynamicPolicyService;
         this.tierResolver = tierResolver;
     }
 
@@ -58,20 +46,15 @@ class RateLimitPolicyResolver {
     }
 
     private RateLimitPolicy policyFor(RequestCategory category, UserTier tier) {
-        RateLimitPolicyProperties.PolicyValues values = valuesFor(category, tier);
+        RateLimitPolicyProperties.PolicyValues values = dynamicPolicyService.lookupPolicy(category, tier);
         if (values == null) {
             return fallback();
         }
         return toPolicy(category + ":" + tier, values);
     }
 
-    private RateLimitPolicyProperties.PolicyValues valuesFor(RequestCategory category, UserTier tier) {
-        Map<UserTier, RateLimitPolicyProperties.PolicyValues> byTier = properties.getPolicies().get(category);
-        return byTier == null ? null : byTier.get(tier);
-    }
-
     private RateLimitPolicy fallback() {
-        return toPolicy(FALLBACK_POLICY_ID, properties.getFallback());
+        return toPolicy(FALLBACK_POLICY_ID, staticProperties.getFallback());
     }
 
     private static RateLimitPolicy toPolicy(String id, RateLimitPolicyProperties.PolicyValues values) {
@@ -80,14 +63,16 @@ class RateLimitPolicyResolver {
 
     /**
      * Every policy that must be registered on the {@code RedisRateLimiter}
-     * at startup (see {@code RateLimitingGlobalFilter#registerPolicies}) —
-     * everything actually configured in the matrix, plus the fallback, which
-     * always exists even if nothing in {@code policies.*} does.
+     * at startup — everything in the dynamic cache, plus the fallback.
      */
     List<RateLimitPolicy> allConfiguredPolicies() {
         List<RateLimitPolicy> all = new ArrayList<>();
-        properties.getPolicies().forEach((category, byTier) ->
-                byTier.forEach((tier, values) -> all.add(toPolicy(category + ":" + tier, values))));
+        for (Map.Entry<String, DynamicRateLimitPolicy> entry : dynamicPolicyService.getCacheSnapshot().entrySet()) {
+            DynamicRateLimitPolicy p = entry.getValue();
+            if (p.isEnabled()) {
+                all.add(new RateLimitPolicy(p.policyKey(), p.getReplenishRate(), p.getBurstCapacity(), p.getRequestedTokens()));
+            }
+        }
         all.add(fallback());
         return all;
     }

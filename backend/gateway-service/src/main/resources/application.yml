@@ -39,7 +39,9 @@ spring:
             allowed-methods:
               - GET
               - POST
+              - PUT
               - PATCH
+              - DELETE
               - OPTIONS
             allowed-headers:
               - Authorization
@@ -365,6 +367,13 @@ eventtick:
         FREE: { replenish-rate: 5, burst-capacity: 10 }
         PRO: { replenish-rate: 10, burst-capacity: 20 }
         PREMIUM: { replenish-rate: 15, burst-capacity: 30 }
+        ADMIN: { replenish-rate: 50, burst-capacity: 100 }
+      PAYMENT:
+        FREE: { replenish-rate: 3, burst-capacity: 6 }
+        PRO: { replenish-rate: 8, burst-capacity: 16 }
+        PREMIUM: { replenish-rate: 15, burst-capacity: 30 }
+        ADMIN: { replenish-rate: 50, burst-capacity: 100 }
+      ADMIN:
         ADMIN: { replenish-rate: 50, burst-capacity: 100 }
     # Used whenever a request's (category, tier) pair is not one of the
     # combinations above — most notably an unrecognized path

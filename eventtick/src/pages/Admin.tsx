@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Ticket, IndianRupee, CalendarDays, ShieldAlert, Film, MapPin, Activity, Database, CheckCircle2, XCircle } from 'lucide-react';
-import { getAdminStats, getAdminOverviewStats, getRateLimitPolicies, getRateLimitStats, getBookings, ApiError } from '../services/api';
+import { getAdminStats, getAdminOverviewStats, getRateLimitPolicies, getRateLimitStats, getBookings, ApiError, type DynamicPolicyResponse } from '../services/api';
 import { useApp } from '../context/AppContext';
-import type { AdminStats, AdminOverviewStats, Booking, RateLimitPolicy, RateLimitStatsResponse } from '../types';
+import type { AdminStats, AdminOverviewStats, Booking, RateLimitStatsResponse } from '../types';
 import StatCard from '../components/admin/StatCard';
 import BookingTable from '../components/admin/BookingTable';
-import RateLimitTable from '../components/admin/RateLimitTable';
+import RateLimitPolicyManager from '../components/admin/RateLimitPolicyManager';
 import EmptyState from '../components/common/EmptyState';
 import Loading from '../components/common/Loading';
 
 export default function Admin() {
   const { user } = useApp();
   const [stats, setStats] = useState<AdminStats | null>(null);
-  const [policies, setPolicies] = useState<RateLimitPolicy[]>([]);
+  const [policies, setPolicies] = useState<DynamicPolicyResponse[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
 
   // FR-36: the real Admin Overview statistics — kept separate from the
@@ -32,11 +32,20 @@ export default function Admin() {
 
   const isAdmin = user?.role === 'ADMIN';
 
+  const [policiesError, setPoliciesError] = useState<string | null>(null);
+
   useEffect(() => {
     getAdminStats().then(setStats);
-    getRateLimitPolicies().then(setPolicies);
     getBookings().then(setBookings);
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    setPoliciesError(null);
+    getRateLimitPolicies()
+      .then(setPolicies)
+      .catch(err => setPoliciesError(err instanceof ApiError ? err.message : 'Could not load policies.'));
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -247,8 +256,12 @@ export default function Admin() {
       </section>
 
       <section className="card p-5">
-        <h2 className="text-text-primary font-semibold mb-2">Rate-limit policies</h2>
-        <RateLimitTable policies={policies} />
+        <h2 className="text-text-primary font-semibold mb-2">Dynamic Rate-Limit Policies</h2>
+        {policiesError ? (
+          <div className="text-error text-sm">{policiesError}</div>
+        ) : (
+          <RateLimitPolicyManager policies={policies} onPoliciesChange={setPolicies} />
+        )}
       </section>
     </div>
   );
