@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Ticket } from 'lucide-react';
-import { getBookings, cancelBooking } from '../services/api';
+import { getBookings, cancelBooking, ApiError } from '../services/api';
 import { useApp } from '../context/AppContext';
 import type { Booking } from '../types';
 import EmptyState from '../components/common/EmptyState';
@@ -19,19 +19,29 @@ export default function Bookings() {
   const navigate = useNavigate();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoggedIn) {
       setLoading(false);
       return;
     }
-    getBookings(user?.id).then(b => { setBookings(b); setLoading(false); });
-  }, [isLoggedIn, user?.id]);
+    setError(null);
+    getBookings()
+      .then(b => { setBookings(b); setLoading(false); })
+      .catch(err => {
+        setError(err instanceof ApiError ? err.message : 'Could not load bookings.');
+        setLoading(false);
+      });
+  }, [isLoggedIn]);
 
   const handleCancel = async (id: string) => {
     if (!window.confirm('Cancel this booking?')) return;
-    if (await cancelBooking(id)) {
-      setBookings(bs => bs.map(b => (b.id === id ? { ...b, status: 'CANCELLED' } : b)));
+    try {
+      const updated = await cancelBooking(id);
+      setBookings(bs => bs.map(b => (b.id === id ? updated : b)));
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Cancellation failed.');
     }
   };
 
@@ -50,7 +60,8 @@ export default function Bookings() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
       <h1 className="section-title mb-6">My Bookings</h1>
-      {bookings.length === 0 ? (
+      {error && <div className="card p-5 border-error/30 text-error text-sm mb-4">{error}</div>}
+      {bookings.length === 0 && !error ? (
         <EmptyState icon={<Ticket size={24} />} title="No bookings yet" description="Book something and it will show up here." />
       ) : (
         <div className="space-y-3">

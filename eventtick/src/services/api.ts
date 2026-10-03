@@ -12,12 +12,13 @@
 //     getShowsByEvent, getShowById (Catalog — this file's latest real
 //     integration; see each one's own comment, especially for the fields
 //     catalog-service's real data doesn't carry)
-//   getAdminOverviewStats, getRateLimitStats (Admin)
-// getTrendingEvents/getFeaturedEvents stay on mock data — catalog-service
-// has no "trending"/"featured" concept to source them from (see
-// getTrendingEvents's own comment).
-// Everything else still returns mock data with simulated async delay,
-// until its own backend integration phase.
+//   getBookings, cancelBooking (Bookings — user's own list + cancellation)
+//   searchEvents (Search — real catalog with client-side filtering)
+//   getAdminOverviewStats, getRateLimitStats, getAdminBookings (Admin)
+// getTrendingEvents stays on mock data — catalog-service has no
+// "trending" concept to source it from.
+// getAdminStats, getPlans, subscribeToPlan still return mock data,
+// until their own backend integration phases.
 //
 // All frontend components should ONLY call functions from this file,
 // never fetch data directly.
@@ -34,7 +35,7 @@ import type {
 } from '../types';
 
 import {
-  allEvents, mockBookings, plans,
+  allEvents, plans,
   adminStats
 } from '../data/mockData';
 
@@ -151,10 +152,6 @@ export async function getTrendingEvents(): Promise<Content[]> {
   return allEvents.filter(e => e.trending).slice(0, 8);
 }
 
-export async function getFeaturedEvents(): Promise<Content[]> {
-  await delay(300);
-  return allEvents.filter(e => e.featured).slice(0, 5);
-}
 
 // ─── Venues ──────────────────────────────────────────────────────────────────
 
@@ -484,19 +481,47 @@ export async function getBooking(bookingId: string): Promise<BackendBookingRespo
   return request<BackendBookingResponse>(`/api/bookings/${bookingId}`, { auth: true });
 }
 
-export async function getBookings(userId?: string): Promise<Booking[]> {
-  await delay(400);
-  return mockBookings.filter(b => !userId || b.userId === userId);
+function toBooking(b: BackendBookingResponse): Booking {
+  return {
+    id: b.bookingId,
+    bookingRef: b.bookingId.slice(0, 8).toUpperCase(),
+    userId: b.userId,
+    showId: b.showId,
+    contentId: '',
+    venueId: '',
+    seats: b.seats.map(s => s.showSeatId.slice(0, 6).toUpperCase()),
+    category: 'REGULAR',
+    ticketPrice: b.totalAmount,
+    convenienceFee: 0,
+    totalAmount: b.totalAmount,
+    status: b.status,
+    createdAt: b.createdAt ?? new Date().toISOString(),
+  };
 }
 
-export async function getBookingById(id: string): Promise<Booking | null> {
-  await delay(300);
-  return mockBookings.find(b => b.id === id) || null;
+/**
+ * GET /api/bookings — the caller's own bookings (booking-service enforces
+ * ownership via the JWT). The backend's BookingResponse doesn't carry
+ * contentId/venueId/seat-labels/bookingRef — those fields are left at
+ * defaults until a future enrichment phase joins them from catalog-service.
+ */
+export async function getBookings(): Promise<Booking[]> {
+  const list = await request<BackendBookingResponse[]>('/api/bookings', { auth: true });
+  return list.map(toBooking);
 }
 
-export async function cancelBooking(_id: string): Promise<boolean> {
-  await delay(500);
-  return true;
+/**
+ * POST /api/bookings/{id}/cancel — cancels a booking the caller owns.
+ * Returns the updated BookingResponse (status: CANCELLED). Throws
+ * ApiError on failure (404 not found, 403 not owner, 409 already
+ * cancelled/not cancellable).
+ */
+export async function cancelBooking(id: string): Promise<Booking> {
+  const res = await request<BackendBookingResponse>(`/api/bookings/${id}/cancel`, {
+    method: 'POST',
+    auth: true,
+  });
+  return toBooking(res);
 }
 
 // ─── Payments ────────────────────────────────────────────────────────────────
@@ -739,6 +764,18 @@ export async function getAdminStats(): Promise<AdminStats> {
   return adminStats;
 }
 
+/**
+ * GET /api/admin/bookings — paginated admin booking list. The backend
+ * returns a Spring Page<BookingResponse>; we extract the content array.
+ */
+interface SpringPage<T> { content: T[]; totalElements: number; totalPages: number; number: number; size: number }
+
+export async function getAdminBookings(): Promise<Booking[]> {
+  const page = await request<SpringPage<BackendBookingResponse>>(
+    '/api/admin/bookings?size=20&sort=createdAt,desc', { auth: true });
+  return page.content.map(toBooking);
+}
+
 // Phase 19: real dynamic rate-limit policy CRUD — replaces the mock
 // implementation. These hit the Gateway's own admin endpoints, not a
 // downstream service.
@@ -819,24 +856,29 @@ export async function getAdminOverviewStats(): Promise<AdminOverviewStats> {
 
 // ─── Search ──────────────────────────────────────────────────────────────────
 
+/**
+ * Search real catalog content (GET /api/catalog/content) with client-side
+ * filtering on title, genre, and language — the only text fields
+ * catalog-service's Content entity actually carries.
+ */
 export async function searchEvents(query: string): Promise<SearchResult[]> {
-  await delay(300);
   if (!query.trim()) return [];
   const q = query.toLowerCase();
-  return allEvents
-    .filter(e =>
-      e.title.toLowerCase().includes(q) ||
-      (e.artist || '').toLowerCase().includes(q) ||
-      (e.genre || '').toLowerCase().includes(q) ||
-      (e.teams || []).some(t => t.toLowerCase().includes(q))
+  const content = await request<BackendContent[]>('/api/catalog/content', { auth: true });
+  return content
+    .filter(c =>
+      c.title.toLowerCase().includes(q) ||
+      (c.genre ?? '').toLowerCase().includes(q) ||
+      (c.language ?? '').toLowerCase().includes(q) ||
+      (c.description ?? '').toLowerCase().includes(q)
     )
     .slice(0, 12)
-    .map(e => ({
-      id: e.id,
-      type: e.type,
-      title: e.title,
-      subtitle: [e.city, e.genre, e.sport].filter(Boolean).join(' • '),
-      image: e.image,
+    .map(c => ({
+      id: c.id,
+      type: c.type,
+      title: c.title,
+      subtitle: [c.genre, c.language].filter(Boolean).join(' • '),
+      image: PLACEHOLDER_IMAGE,
     }));
 }
 

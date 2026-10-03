@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, Ticket, IndianRupee, CalendarDays, ShieldAlert, Film, MapPin, Activity, Database, CheckCircle2, XCircle } from 'lucide-react';
-import { getAdminStats, getAdminOverviewStats, getRateLimitPolicies, getRateLimitStats, getBookings, ApiError, type DynamicPolicyResponse } from '../services/api';
+import { getAdminStats, getAdminOverviewStats, getRateLimitPolicies, getRateLimitStats, getAdminBookings, ApiError, type DynamicPolicyResponse } from '../services/api';
 import { useApp } from '../context/AppContext';
 import type { AdminStats, AdminOverviewStats, Booking, RateLimitStatsResponse } from '../types';
 import StatCard from '../components/admin/StatCard';
@@ -34,10 +34,19 @@ export default function Admin() {
 
   const [policiesError, setPoliciesError] = useState<string | null>(null);
 
+  const [bookingsError, setBookingsError] = useState<string | null>(null);
+
   useEffect(() => {
     getAdminStats().then(setStats);
-    getBookings().then(setBookings);
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    setBookingsError(null);
+    getAdminBookings()
+      .then(setBookings)
+      .catch(err => setBookingsError(err instanceof ApiError ? err.message : 'Could not load bookings.'));
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -252,7 +261,11 @@ export default function Admin() {
 
       <section className="card p-5">
         <h2 className="text-text-primary font-semibold mb-2">Recent bookings</h2>
-        <BookingTable bookings={bookings} />
+        {bookingsError ? (
+          <div className="text-error text-sm">{bookingsError}</div>
+        ) : (
+          <BookingTable bookings={bookings} />
+        )}
       </section>
 
       <section className="card p-5">
