@@ -394,7 +394,7 @@ export interface HoldSeatsInput {
   showSeatIds: string[];
 }
 export interface HeldSeat { showSeatId: string; seatId: string; status: 'HELD'; price: number }
-export interface HoldSeatsResponse { showId: string; heldSeats: HeldSeat[] }
+export interface HoldSeatsResponse { showId: string; heldSeats: HeldSeat[]; holdExpiresAt: string }
 
 /**
  * POST /api/bookings/shows/{showId}/seats/hold — AVAILABLE -> HELD for the

@@ -24,12 +24,10 @@ export default function SeatSelection() {
   const [selectedSeats, setSelectedSeats] = useState<Seat[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Visual countdown only. The real backend hold (POST .../seats/hold, see
-  // handleContinue) does not yet expire on its own — there is no Redis
-  // TTL/expiration on a HELD show-seat yet, so this timer does not
-  // currently cause, or correspond to, any real automatic release. It
-  // must not be treated as a guaranteed backend expiry until that lands.
-  const [timer, setTimer] = useState(600); // 10 min seat hold (display only, see comment above)
+  // Visual countdown during seat selection (before any hold exists).
+  // The real backend hold happens on "Continue" click (handleContinue),
+  // and its real expiration is shown in BookingSummary via holdExpiresAt.
+  const [timer, setTimer] = useState(600);
   const [continuing, setContinuing] = useState(false);
   const [holdError, setHoldError] = useState<string | null>(null);
 
@@ -83,7 +81,7 @@ export default function SeatSelection() {
     setContinuing(true);
     try {
       const showSeatIds = selectedSeats.map(seat => seat.id);
-      await holdSeats(showId, { userId: user.id, showSeatIds });
+      const holdResponse = await holdSeats(showId, { userId: user.id, showSeatIds });
 
       // Only navigate once the backend has actually confirmed the hold.
       const { ticketTotal, convenienceFee, total } = calculatePricing(selectedSeats);
@@ -95,6 +93,7 @@ export default function SeatSelection() {
           ticketPrice: ticketTotal,
           convenienceFee,
           totalAmount: total,
+          holdExpiresAt: holdResponse.holdExpiresAt,
         }
       });
     } catch (err) {

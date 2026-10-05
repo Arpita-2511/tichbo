@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, Calendar, Clock, Ticket, CreditCard, Smartphone, CheckCircle } from 'lucide-react';
+import { ArrowLeft, MapPin, Calendar, Clock, Ticket, CreditCard, Smartphone, CheckCircle, Timer } from 'lucide-react';
 import type { Content, Show, Venue, Seat, Booking } from '../types';
 import { createBooking, createPayment, getBooking, ApiError, type BackendBookingResponse } from '../services/api';
 import { useApp } from '../context/AppContext';
@@ -13,6 +13,7 @@ interface SummaryState {
   ticketPrice: number;
   convenienceFee: number;
   totalAmount: number;
+  holdExpiresAt?: string;
 }
 
 const paymentMethods = [
@@ -55,6 +56,27 @@ export default function BookingSummary() {
   const [loading, setLoading] = useState(false);
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Real countdown based on backend hold expiration
+  const [holdSecondsLeft, setHoldSecondsLeft] = useState<number | null>(() => {
+    if (!state?.holdExpiresAt) return null;
+    return Math.max(0, Math.floor((new Date(state.holdExpiresAt).getTime() - Date.now()) / 1000));
+  });
+
+  useEffect(() => {
+    if (holdSecondsLeft === null) return;
+    if (holdSecondsLeft <= 0) return;
+    const interval = setInterval(() => {
+      setHoldSecondsLeft(prev => {
+        if (prev === null || prev <= 0) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [holdSecondsLeft !== null && holdSecondsLeft > 0]);
+
+  const holdExpired = holdSecondsLeft !== null && holdSecondsLeft <= 0;
+  const formatTimer = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
   if (!state) {
     return (
@@ -182,6 +204,21 @@ export default function BookingSummary() {
         <ArrowLeft size={16} /> Back to seat selection
       </button>
 
+      {holdSecondsLeft !== null && (
+        <div className={`flex items-center gap-2 mb-4 px-3 py-2 rounded-lg text-sm ${
+          holdExpired
+            ? 'bg-error/10 text-error border border-error/30'
+            : holdSecondsLeft <= 60
+              ? 'bg-warning/10 text-warning border border-warning/30'
+              : 'bg-accent/10 text-accent-lighter border border-accent/30'
+        }`}>
+          <Timer size={14} className={holdExpired ? '' : 'animate-pulse'} />
+          {holdExpired
+            ? 'Your seat hold has expired. Please go back and select seats again.'
+            : `Seat hold expires in ${formatTimer(holdSecondsLeft)}`}
+        </div>
+      )}
+
       <h1 className="text-2xl font-bold text-text-primary mb-6">Booking Summary</h1>
 
       {/* Event card */}
@@ -293,8 +330,8 @@ export default function BookingSummary() {
       {/* CTA */}
       <button
         onClick={handleProceed}
-        disabled={!agreed || loading}
-        className={`w-full btn-primary text-base py-4 flex items-center justify-center gap-2 ${!agreed ? 'opacity-50 cursor-not-allowed' : ''}`}
+        disabled={!agreed || loading || holdExpired}
+        className={`w-full btn-primary text-base py-4 flex items-center justify-center gap-2 ${!agreed || holdExpired ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
         {loading ? (
           <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Processing...</>

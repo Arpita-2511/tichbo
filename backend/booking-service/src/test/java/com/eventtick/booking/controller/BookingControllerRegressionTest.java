@@ -135,7 +135,8 @@ class BookingControllerRegressionTest {
         UUID showId = UUID.randomUUID();
         ShowSeat seat = showSeat(showId);
         ReleaseSeatsRequest request = new ReleaseSeatsRequest(List.of(seat.getId()));
-        when(bookingService.releaseHold(request.showSeatIds())).thenReturn(List.of(seat));
+        when(bookingService.releaseHoldForCaller(eq(request.showSeatIds()), eq(new CallerIdentity(CALLER, false))))
+                .thenReturn(List.of(seat));
 
         mockMvc.perform(post("/api/bookings/shows/{showId}/seats/release", showId)
                         .header(AUTH, TestTokens.customer(CALLER))

@@ -57,6 +57,12 @@ eventtick:
     publish-sweep-interval-ms: ${EVENTS_PUBLISH_SWEEP_INTERVAL_MS:5000}
     publish-batch-size: ${EVENTS_PUBLISH_BATCH_SIZE:50}
 
+# Phase 22: Temporary Seat Hold Ownership + Expiration.
+booking:
+  seat-hold:
+    duration: ${SEAT_HOLD_DURATION:10m}
+    cleanup-interval-ms: ${SEAT_HOLD_CLEANUP_INTERVAL_MS:60000}
+
 # Booking ownership (BR-07): this service validates the same JWT user-service
 # issues, exactly as payment-service does — same env vars, same local-dev-only
 # fallbacks (never rely on them outside a laptop).

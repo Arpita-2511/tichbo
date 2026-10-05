@@ -47,7 +47,8 @@ class BookingServiceConfirmCancelIdempotencyTest {
     private final BookingSeatRepository bookingSeatRepository = mock(BookingSeatRepository.class);
     private final ShowSeatRepository showSeatRepository = mock(ShowSeatRepository.class);
     private final BookingService bookingService =
-            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository, mock(OutboxService.class));
+            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository,
+                    mock(OutboxService.class), java.time.Duration.ofMinutes(10));
 
     private static Booking booking(UUID id, BookingStatus status) {
         Booking booking = new Booking();

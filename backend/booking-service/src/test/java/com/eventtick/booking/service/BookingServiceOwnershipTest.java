@@ -41,7 +41,8 @@ class BookingServiceOwnershipTest {
     private final BookingSeatRepository bookingSeatRepository = mock(BookingSeatRepository.class);
     private final ShowSeatRepository showSeatRepository = mock(ShowSeatRepository.class);
     private final BookingService bookingService =
-            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository, mock(OutboxService.class));
+            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository,
+                    mock(OutboxService.class), java.time.Duration.ofMinutes(10));
 
     private static final UUID OWNER = UUID.randomUUID();
     private static final UUID OTHER = UUID.randomUUID();

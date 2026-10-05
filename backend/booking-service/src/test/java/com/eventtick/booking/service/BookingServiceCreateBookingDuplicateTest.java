@@ -12,6 +12,8 @@ import com.eventtick.booking.repository.ShowSeatRepository;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,21 +27,16 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Regression for the defect found by the Phase 15 Step 4 integration test:
- * five users simultaneously calling {@code POST /api/bookings} for the same
- * {@code HELD} seat all got 201, leaving five active bookings on one seat
- * (a seat stays HELD after a booking is created, so the HELD check alone
- * never stopped a second one). {@code createBooking} must reject a seat that
- * already belongs to a PENDING or CONFIRMED booking.
- */
 class BookingServiceCreateBookingDuplicateTest {
 
     private final BookingRepository bookingRepository = mock(BookingRepository.class);
     private final BookingSeatRepository bookingSeatRepository = mock(BookingSeatRepository.class);
     private final ShowSeatRepository showSeatRepository = mock(ShowSeatRepository.class);
     private final BookingService bookingService =
-            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository, mock(OutboxService.class));
+            new BookingService(bookingRepository, bookingSeatRepository, showSeatRepository,
+                    mock(OutboxService.class), Duration.ofMinutes(10));
+
+    private static final UUID USER = UUID.randomUUID();
 
     private static ShowSeat heldSeat(UUID id, UUID showId) {
         ShowSeat seat = mock(ShowSeat.class);
@@ -47,6 +44,8 @@ class BookingServiceCreateBookingDuplicateTest {
         when(seat.getShowId()).thenReturn(showId);
         when(seat.getStatus()).thenReturn(ShowSeatStatus.HELD);
         when(seat.getPrice()).thenReturn(new BigDecimal("500.00"));
+        when(seat.getHolderUserId()).thenReturn(USER);
+        when(seat.getHoldExpiresAt()).thenReturn(Instant.now().plusSeconds(600));
         return seat;
     }
 
@@ -59,7 +58,7 @@ class BookingServiceCreateBookingDuplicateTest {
         when(bookingSeatRepository.findShowSeatIdsWithBookingInStatus(anyCollection(), anyCollection()))
                 .thenReturn(List.of(seatId));
 
-        assertThatThrownBy(() -> bookingService.createBooking(UUID.randomUUID(), showId, List.of(seatId), "corr-test"))
+        assertThatThrownBy(() -> bookingService.createBooking(USER, showId, List.of(seatId), "corr-test"))
                 .isInstanceOf(InvalidSeatStateException.class)
                 .hasMessageContaining(seatId.toString())
                 .hasMessageContaining("active booking");
@@ -78,7 +77,7 @@ class BookingServiceCreateBookingDuplicateTest {
                 .thenReturn(List.of());
         when(bookingRepository.save(any(Booking.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        bookingService.createBooking(UUID.randomUUID(), showId, List.of(seatId), "corr-test");
+        bookingService.createBooking(USER, showId, List.of(seatId), "corr-test");
 
         verify(bookingSeatRepository).findShowSeatIdsWithBookingInStatus(
                 eq(List.of(seatId)), eq(List.of(BookingStatus.PENDING, BookingStatus.CONFIRMED)));
@@ -94,7 +93,7 @@ class BookingServiceCreateBookingDuplicateTest {
                 .thenReturn(List.of());
         when(bookingRepository.save(any(Booking.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Booking created = bookingService.createBooking(UUID.randomUUID(), showId, List.of(seatId), "corr-test");
+        Booking created = bookingService.createBooking(USER, showId, List.of(seatId), "corr-test");
 
         assertThat(created.getStatus()).isEqualTo(BookingStatus.PENDING);
         assertThat(created.getTotalAmount()).isEqualByComparingTo("500.00");

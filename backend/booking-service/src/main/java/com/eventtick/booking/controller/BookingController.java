@@ -30,20 +30,6 @@ import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * REST surface for the approved Booking Service API contract. Every
- * method here delegates directly to {@link BookingService} or
- * {@link ShowSeatQueryService} and maps the result to a DTO — no booking
- * rules live in this class. A single controller covers all seven
- * endpoints (rather than a separate {@code ShowSeatController}) because
- * the approved contract nests the seat-map/hold/release endpoints under
- * {@code /api/bookings/shows/{showId}/...}, i.e. under this same
- * resource, not a separate top-level one.
- *
- * <p>Exceptions thrown by the service layer are not handled here — see
- * {@code com.eventtick.booking.exception.GlobalExceptionHandler} for the
- * exception-to-HTTP-status mapping.
- */
 @RestController
 @RequestMapping("/api/bookings")
 public class BookingController {
@@ -56,43 +42,54 @@ public class BookingController {
         this.showSeatQueryService = showSeatQueryService;
     }
 
-    /** 1. Get seat map for a show. */
     @GetMapping("/shows/{showId}/seats")
     public SeatMapResponse getSeatMap(@PathVariable UUID showId) {
         List<ShowSeat> seats = showSeatQueryService.getSeatMap(showId);
         return new SeatMapResponse(showId, seats.stream().map(SeatMapItemDto::from).toList());
     }
 
-    /** 2. Hold selected seats. */
+    /**
+     * Hold selected seats. The body's {@code userId} must match the
+     * authenticated caller — it is kept for backward compatibility but is
+     * not an authority. The authenticated user's identity from the JWT is
+     * what the service records as the hold owner.
+     */
     @PostMapping("/shows/{showId}/seats/hold")
-    public HoldSeatsResponse holdSeats(@PathVariable UUID showId, @Valid @RequestBody HoldSeatsRequest request) {
-        List<ShowSeat> held = bookingService.holdSeats(showId, request.showSeatIds(), request.userId());
-        return new HoldSeatsResponse(showId, held.stream().map(SeatMapItemDto::from).toList());
+    public HoldSeatsResponse holdSeats(@PathVariable UUID showId,
+                                       @Valid @RequestBody HoldSeatsRequest request,
+                                       Authentication authentication) {
+        CallerIdentity caller = CallerIdentity.from(authentication);
+        if (!request.userId().equals(caller.userId())) {
+            throw new BookingAccessDeniedException("You can only hold seats for yourself.");
+        }
+        List<ShowSeat> held = bookingService.holdSeats(showId, request.showSeatIds(), caller.userId());
+        return new HoldSeatsResponse(
+                showId,
+                held.stream().map(SeatMapItemDto::from).toList(),
+                held.isEmpty() ? null : held.get(0).getHoldExpiresAt());
     }
 
-    /** 3. Release held seats. */
+    /**
+     * Release held seats. Only seats actually held by the authenticated
+     * caller are released; seats held by someone else or already
+     * AVAILABLE/BOOKED are left untouched.
+     */
     @PostMapping("/shows/{showId}/seats/release")
-    public ReleaseSeatsResponse releaseSeats(@PathVariable UUID showId, @Valid @RequestBody ReleaseSeatsRequest request) {
-        List<ShowSeat> released = bookingService.releaseHold(request.showSeatIds());
+    public ReleaseSeatsResponse releaseSeats(@PathVariable UUID showId,
+                                             @Valid @RequestBody ReleaseSeatsRequest request,
+                                             Authentication authentication) {
+        CallerIdentity caller = CallerIdentity.from(authentication);
+        List<ShowSeat> released = bookingService.releaseHoldForCaller(request.showSeatIds(), caller);
         return new ReleaseSeatsResponse(showId, released.stream().map(SeatMapItemDto::from).toList());
     }
 
-    /** Get a single booking by id (fixes the Location header from #4 actually resolving). */
     @GetMapping("/{bookingId}")
     public BookingResponse getBooking(@PathVariable UUID bookingId, Authentication authentication) {
         return toBookingResponse(bookingService.getBookingForCaller(bookingId, CallerIdentity.from(authentication)));
     }
 
     /**
-     * 4. Create a booking. {@code userId} stays in the body for API
-     * compatibility, but it is only accepted when it matches the
-     * authenticated caller — it is not an authority for anything.
-     *
-     * <p>{@code X-Request-ID} (Phase 16 Step 2): the Gateway already sets
-     * this on every routed request ({@code RequestIdWebFilter}), even
-     * though booking-service has never read it until now. Reused as the
-     * outbox event's {@code correlationId} (docs/architecture.md §47.5/§48)
-     * rather than inventing a second, unrelated request-id mechanism.
+     * Create a booking. {@code userId} in the body must match the JWT.
      */
     @PostMapping
     public ResponseEntity<BookingResponse> createBooking(@Valid @RequestBody CreateBookingRequest request,
@@ -107,29 +104,11 @@ public class BookingController {
         return ResponseEntity.created(URI.create("/api/bookings/" + booking.getId())).body(response);
     }
 
-    /*
-     * There is deliberately no public "confirm a booking" endpoint (5).
-     * Confirmation is a payment outcome, not a customer or admin action:
-     * only payment-service confirms, after its payment reaches SUCCESS, via
-     * POST /internal/bookings/{id}/confirm. A public one let any signed-in
-     * customer confirm an unpaid booking. See SecurityConfig, which also
-     * denies the old path outright.
-     */
-
-    /**
-     * 6. Cancel a booking — owner only. Any request body is ignored: the
-     * caller's identity comes from the JWT.
-     */
     @PostMapping("/{bookingId}/cancel")
     public BookingResponse cancelBooking(@PathVariable UUID bookingId, Authentication authentication) {
         return toBookingResponse(bookingService.cancelBookingForCaller(bookingId, CallerIdentity.from(authentication)));
     }
 
-    /**
-     * 7. List bookings. A customer gets their own; an administrator gets the
-     * named user's, or all when {@code userId} is omitted. See
-     * {@link BookingService#getBookingsForCaller}.
-     */
     @GetMapping
     public List<BookingResponse> getBookings(@RequestParam(required = false) UUID userId,
                                              Authentication authentication) {

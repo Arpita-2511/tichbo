@@ -18,12 +18,15 @@ import com.eventtick.booking.repository.BookingSeatRepository;
 import com.eventtick.booking.repository.ShowSeatRepository;
 import com.eventtick.booking.security.CallerIdentity;
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -32,42 +35,38 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Seat-hold and booking lifecycle: {@code AVAILABLE → HELD → BOOKED} on
- * {@code show_seats}, and {@code PENDING → CONFIRMED / CANCELLED} on
+ * Seat-hold and booking lifecycle: {@code AVAILABLE -> HELD -> BOOKED} on
+ * {@code show_seats}, and {@code PENDING -> CONFIRMED / CANCELLED} on
  * {@code bookings}.
  *
- * <h2>Concurrency — what is and isn't handled</h2>
+ * <h2>Concurrency</h2>
  * Every method that transitions a {@code ShowSeat}'s status
  * ({@link #holdSeats}, {@link #releaseHold}, the seat transitions inside
  * {@link #confirmBooking} and {@link #cancelBooking}) goes through
  * {@link #lockShowSeats}, which uses
  * {@link ShowSeatRepository#lockAllByIdIn} — a {@code SELECT ... FOR
- * UPDATE} row lock — inside an {@code @Transactional} method. This is
- * exactly what prevents two concurrent requests from both successfully
- * claiming the same seat: the second request's lock acquisition blocks
- * until the first transaction commits, so the second request re-reads the
- * post-commit status and correctly fails its status check instead of
- * racing on stale data. This part is safe today and requires no schema
- * change or Redis.
+ * UPDATE} row lock — inside an {@code @Transactional} method.
  *
- * <h2>What is NOT safe / NOT implemented yet</h2>
- * <ul>
- *   <li><b>Hold ownership.</b> {@code show_seats} has no column recording
- *   <i>who</i> holds a seat. {@link #holdSeats} accepts a {@code userId}
- *   parameter, but it is currently unused — not stored, not checked. Any
- *   caller who knows a {@code showSeatId} can currently release or act on
- *   a hold regardless of who created it. This is the specific gap Redis
- *   is expected to close (see {@code docs/architecture.md} §16):
- *   ownership + hold identity belongs in a Redis-backed hold record, not a
- *   new column bolted onto this table.</li>
- *   <li><b>Hold expiry.</b> There is no TTL anywhere. A seat set to
- *   {@code HELD} stays {@code HELD} forever unless something explicitly
- *   calls {@link #releaseHold} or {@link #cancelBooking}. Until Redis (or
- *   a scheduled sweep) exists, an abandoned checkout permanently locks a
- *   seat. Do not mistake the current behavior for "temporary."</li>
- *   <li><b>Seat-hold ownership</b> (above) is still not enforced: hold,
- *   release and the seat map are open to any authenticated caller.</li>
- * </ul>
+ * <h2>Hold ownership (Phase 22)</h2>
+ * {@link #holdSeats} records <i>who</i> holds a seat (via
+ * {@code holderUserId}) and <i>when</i> that hold expires (via
+ * {@code holdExpiresAt}, computed from the configurable
+ * {@code booking.seat-hold.duration}). {@link #createBooking} verifies
+ * that the requesting user owns the hold and that it has not expired.
+ * {@link #releaseHoldForCaller} enforces ownership on the public release
+ * endpoint.
+ *
+ * <h2>Hold expiration (Phase 22)</h2>
+ * Two mechanisms ensure expired holds are cleaned up:
+ * <ol>
+ *   <li><b>Lazy expiration:</b> {@link #expireStaleHolds} runs after
+ *       locking seats in any write path, releasing expired holds inline
+ *       so no stale HELD seat blocks a subsequent hold or booking.</li>
+ *   <li><b>Scheduled cleanup:</b>
+ *       {@link SeatHoldExpirationScheduler} periodically sweeps
+ *       {@link ShowSeatRepository#releaseExpiredHolds} to free orphaned
+ *       holds that no subsequent request ever touched.</li>
+ * </ol>
  *
  * <h2>Booking ownership (BR-07)</h2>
  * Reading, listing and cancelling a booking on behalf of a signed-in user
@@ -84,43 +83,53 @@ public class BookingService {
     private final BookingSeatRepository bookingSeatRepository;
     private final ShowSeatRepository showSeatRepository;
     private final OutboxService outboxService;
+    private final Duration holdDuration;
 
     public BookingService(BookingRepository bookingRepository,
                            BookingSeatRepository bookingSeatRepository,
                            ShowSeatRepository showSeatRepository,
-                           OutboxService outboxService) {
+                           OutboxService outboxService,
+                           @Value("${booking.seat-hold.duration}") Duration holdDuration) {
         this.bookingRepository = bookingRepository;
         this.bookingSeatRepository = bookingSeatRepository;
         this.showSeatRepository = showSeatRepository;
         this.outboxService = outboxService;
+        this.holdDuration = holdDuration;
     }
 
     /**
-     * Transitions the given seats {@code AVAILABLE -> HELD} for one show.
-     * All requested seats succeed together or none do.
+     * Transitions the given seats {@code AVAILABLE -> HELD} for one show,
+     * recording the holder's identity and the hold expiration timestamp.
+     * Lazy-expires any stale holds on the requested seats first, so an
+     * expired hold on a seat does not block a new one.
      *
-     * @param userId accepted but currently unused — see class Javadoc
-     *               ("Hold ownership"). Not persisted anywhere.
      * @throws SeatShowMismatchException if a showSeatId doesn't belong to {@code showId}
-     * @throws InvalidSeatStateException if any seat isn't currently AVAILABLE
+     * @throws InvalidSeatStateException if any seat isn't currently AVAILABLE (after lazy expiration)
      */
     @Transactional
     public List<ShowSeat> holdSeats(UUID showId, List<UUID> showSeatIds, UUID userId) {
         requireNonEmpty(showSeatIds);
         List<ShowSeat> seats = lockShowSeats(showSeatIds);
+        expireStaleHolds(seats);
         validateSeatsBelongToShow(seats, showId);
         validateSeatsInStatus(seats, ShowSeatStatus.AVAILABLE);
-        seats.forEach(seat -> seat.setStatus(ShowSeatStatus.HELD));
+
+        Instant now = Instant.now();
+        Instant expiresAt = now.plus(holdDuration);
+        for (ShowSeat seat : seats) {
+            seat.setStatus(ShowSeatStatus.HELD);
+            seat.setHolderUserId(userId);
+            seat.setHeldAt(now);
+            seat.setHoldExpiresAt(expiresAt);
+        }
         return seats;
     }
 
     /**
-     * Best-effort, idempotent release: any of the given seats currently
+     * System-level, best-effort release: any of the given seats currently
      * {@code HELD} are reverted to {@code AVAILABLE}; seats already
-     * {@code AVAILABLE} or already {@code BOOKED} are left untouched
-     * rather than treated as an error. This is deliberately lenient — see
-     * class Javadoc ("Hold expiry") for why an explicit release is the
-     * only way to free a held seat right now.
+     * {@code AVAILABLE} or already {@code BOOKED} are left untouched.
+     * No ownership check — used by internal/system callers.
      */
     @Transactional
     public List<ShowSeat> releaseHold(List<UUID> showSeatIds) {
@@ -128,7 +137,27 @@ public class BookingService {
         List<ShowSeat> seats = lockShowSeats(showSeatIds);
         for (ShowSeat seat : seats) {
             if (seat.getStatus() == ShowSeatStatus.HELD) {
-                seat.setStatus(ShowSeatStatus.AVAILABLE);
+                clearHoldFields(seat);
+            }
+        }
+        return seats;
+    }
+
+    /**
+     * Caller-owned release (Phase 22): only seats held by the caller are
+     * released. Seats held by a different user are left untouched (not an
+     * error — the caller may have lost the hold to expiration and another
+     * user re-held it). Seats already AVAILABLE or BOOKED are also left
+     * untouched.
+     */
+    @Transactional
+    public List<ShowSeat> releaseHoldForCaller(List<UUID> showSeatIds, CallerIdentity caller) {
+        requireNonEmpty(showSeatIds);
+        List<ShowSeat> seats = lockShowSeats(showSeatIds);
+        for (ShowSeat seat : seats) {
+            if (seat.getStatus() == ShowSeatStatus.HELD
+                    && caller.userId().equals(seat.getHolderUserId())) {
+                clearHoldFields(seat);
             }
         }
         return seats;
@@ -136,33 +165,24 @@ public class BookingService {
 
     /**
      * Records a new {@code PENDING} booking for seats that must already be
-     * {@code HELD} (by a prior {@link #holdSeats} call) — this method does
-     * not itself claim {@code AVAILABLE} seats. {@code totalAmount} is
-     * computed here as the sum of each seat's current price.
+     * {@code HELD} by the requesting user and not expired.
      *
-     * <p>Phase 16 Step 2: also writes a {@code BookingCreated} outbox row
-     * (see {@link OutboxService}) in this same transaction, so the booking
-     * and the event describing it can never disagree — either both commit
-     * or neither does. Publishing to Kafka itself happens later,
-     * independently, and never affects this method's own success or
-     * failure (docs/architecture.md §48).
+     * <p>Phase 22: after locking, lazy-expires stale holds, then verifies
+     * each seat is HELD by {@code userId} specifically. An expired or
+     * foreign hold throws {@link InvalidSeatStateException}.
      *
      * @param correlationId ties the resulting event back to the request
-     *                       that created this booking (its own
-     *                       X-Request-ID) — see {@link OutboxService#record}
      * @throws SeatShowMismatchException if a showSeatId doesn't belong to {@code showId}
-     * @throws InvalidSeatStateException if any seat isn't currently HELD
+     * @throws InvalidSeatStateException if any seat isn't HELD by this user
      */
     @Transactional
     public Booking createBooking(UUID userId, UUID showId, List<UUID> showSeatIds, String correlationId) {
         requireNonEmpty(showSeatIds);
         List<ShowSeat> seats = lockShowSeats(showSeatIds);
+        expireStaleHolds(seats);
         validateSeatsBelongToShow(seats, showId);
-        validateSeatsInStatus(seats, ShowSeatStatus.HELD);
+        validateSeatsHeldByUser(seats, userId);
 
-        // A seat stays HELD after a booking is created, so HELD alone doesn't
-        // stop a second booking on it. The row locks taken above serialize
-        // concurrent callers: the later one sees the earlier booking committed.
         List<UUID> alreadyBooked = bookingSeatRepository.findShowSeatIdsWithBookingInStatus(
                 showSeatIds, List.of(BookingStatus.PENDING, BookingStatus.CONFIRMED));
         if (!alreadyBooked.isEmpty()) {
@@ -202,16 +222,10 @@ public class BookingService {
     /**
      * Confirms a {@code PENDING} booking: its seats transition
      * {@code HELD -> BOOKED} and the booking becomes {@code CONFIRMED}.
-     * Called from payment-service after a successful payment
-     * ({@code BookingServiceClient.confirmBooking} — Phase 15).
+     * Clears the hold-ownership fields since the seat is now permanently
+     * booked.
      *
-     * <p><b>Idempotent on an already-{@code CONFIRMED} booking</b> (Phase 15
-     * Step 3): returns the booking as-is rather than throwing, specifically
-     * so payment-service's reconciliation sweep can safely retry this call
-     * after a network failure without knowing whether the first attempt
-     * actually landed — see {@code docs/architecture.md} §25.3. This is the
-     * only behavior change; every other status still throws exactly as
-     * before.
+     * <p><b>Idempotent on an already-{@code CONFIRMED} booking</b>.
      *
      * @throws BookingNotFoundException if bookingId doesn't exist
      * @throws InvalidBookingStateException if the booking is neither PENDING nor already CONFIRMED
@@ -229,7 +243,12 @@ public class BookingService {
 
         List<ShowSeat> seats = lockSeatsForBooking(bookingId);
         validateSeatsInStatus(seats, ShowSeatStatus.HELD);
-        seats.forEach(seat -> seat.setStatus(ShowSeatStatus.BOOKED));
+        for (ShowSeat seat : seats) {
+            seat.setStatus(ShowSeatStatus.BOOKED);
+            seat.setHolderUserId(null);
+            seat.setHeldAt(null);
+            seat.setHoldExpiresAt(null);
+        }
 
         booking.setStatus(BookingStatus.CONFIRMED);
         return bookingRepository.save(booking);
@@ -237,22 +256,11 @@ public class BookingService {
 
     /**
      * Cancels a {@code PENDING} or {@code CONFIRMED} booking; its seats
-     * are released back to {@code AVAILABLE} regardless of whether they
-     * were {@code HELD} or {@code BOOKED}. Also called from payment-service
-     * after a failed or expired payment
-     * ({@code BookingServiceClient.releaseBooking} —
-     * Phase 15).
+     * are released back to {@code AVAILABLE}. Clears hold-ownership
+     * fields.
      *
-     * <p><b>Idempotent on an already-{@code CANCELLED} booking</b> (Phase 15
-     * Step 3), for the same reconciliation-retry reason as
-     * {@link #confirmBooking} above.
-     *
-     * <p><b>No ownership check</b> — this is the system-level cancel, used by
-     * payment-service through {@code /internal/**}. A customer-initiated
-     * cancel goes through {@link #cancelBookingForCaller}.
-     *
-     * @throws BookingNotFoundException if bookingId doesn't exist
-     * @throws InvalidBookingStateException if the booking is FAILED, or already CANCELLED only via a different path than this method's own idempotent return (see above)
+     * <p><b>Idempotent on an already-{@code CANCELLED} booking</b>.
+     * <p><b>No ownership check</b> — system-level cancel for payment-service.
      */
     @Transactional
     public Booking cancelBooking(UUID bookingId) {
@@ -260,14 +268,7 @@ public class BookingService {
     }
 
     /**
-     * Customer-initiated cancel (BR-07): only the booking's owner may cancel
-     * it. Administrators are not exempt — FR-39 defines admin booking
-     * management as read-only. The ownership check runs after the existence
-     * check (404 for a nonexistent booking, 403 for someone else's) and
-     * before any state or seat change.
-     *
-     * @throws BookingNotFoundException      if bookingId doesn't exist
-     * @throws BookingAccessDeniedException  if the caller does not own the booking
+     * Customer-initiated cancel (BR-07): only the booking's owner may cancel it.
      */
     @Transactional
     public Booking cancelBookingForCaller(UUID bookingId, CallerIdentity caller) {
@@ -288,32 +289,19 @@ public class BookingService {
         }
 
         List<ShowSeat> seats = lockSeatsForBooking(bookingId);
-        seats.forEach(seat -> seat.setStatus(ShowSeatStatus.AVAILABLE));
+        for (ShowSeat seat : seats) {
+            clearHoldFields(seat);
+        }
 
         booking.setStatus(BookingStatus.CANCELLED);
         return bookingRepository.save(booking);
     }
 
-    /**
-     * A user's bookings, most-recent-first ordering not yet applied. Plain
-     * read with no authorization — internal use. Callers acting for a
-     * signed-in user go through {@link #getBookingsForCaller}.
-     */
     @Transactional(readOnly = true)
     public List<Booking> getBookingsForUser(UUID userId) {
         return bookingRepository.findByUserId(userId);
     }
 
-    /**
-     * Bookings visible to {@code caller} (BR-07). A customer always gets
-     * their own bookings; naming a different user is refused rather than
-     * silently ignored. An administrator gets the named user's bookings, or
-     * every booking when no user is named. Ownership comes from the validated
-     * JWT, never from a request field.
-     *
-     * @param requestedUserId optional {@code userId} query parameter
-     * @throws BookingAccessDeniedException if a customer asks for someone else's bookings
-     */
     @Transactional(readOnly = true)
     public List<Booking> getBookingsForCaller(CallerIdentity caller, UUID requestedUserId) {
         if (caller.admin()) {
@@ -327,24 +315,11 @@ public class BookingService {
         return bookingRepository.findByUserId(caller.userId());
     }
 
-    /**
-     * A single booking by id. Plain read with no authorization — internal
-     * use (payment-service). Callers acting for a signed-in user go through
-     * {@link #getBookingForCaller}.
-     *
-     * @throws BookingNotFoundException if bookingId doesn't exist
-     */
     @Transactional(readOnly = true)
     public Booking getBooking(UUID bookingId) {
         return requireBooking(bookingId);
     }
 
-    /**
-     * A booking for a signed-in caller (BR-07): its owner or an administrator.
-     *
-     * @throws BookingNotFoundException     if bookingId doesn't exist
-     * @throws BookingAccessDeniedException if the caller is neither the owner nor an admin
-     */
     @Transactional(readOnly = true)
     public Booking getBookingForCaller(UUID bookingId, CallerIdentity caller) {
         Booking booking = requireBooking(bookingId);
@@ -354,45 +329,24 @@ public class BookingService {
         return booking;
     }
 
-    /**
-     * All bookings across every user, for {@code GET /api/admin/bookings}
-     * (Phase 13.7.1). Unlike {@link #getBookingsForUser}, not scoped to one
-     * user — admin-only access is enforced once, at the gateway
-     * ({@code /api/admin/** -> ROLE_ADMIN}), the same boundary every other
-     * admin-only path relies on; no check happens here. Plain
-     * {@link BookingRepository#findAll(Pageable)}: {@link Booking} has no
-     * lazy associations for a response mapper to read (unlike, say,
-     * user-service's {@code User.plan}), so no entity graph is needed.
-     */
     @Transactional(readOnly = true)
     public Page<Booking> listAll(Pageable pageable) {
         return bookingRepository.findAll(pageable);
     }
 
-    /**
-     * {@code GET /api/admin/bookings/stats} (Phase 13, FR-36). A live count
-     * — no admin-only check here, same boundary as {@link #listAll}. FR-36
-     * requires this figure to be sourced live from its owning service, not
-     * cached or duplicated, so this reads {@link BookingRepository#count()}
-     * directly on every call.
-     */
     @Transactional(readOnly = true)
     public long countAll() {
         return bookingRepository.count();
     }
 
-    /**
-     * Read-only accessor for a booking's seat line items. Added to let the
-     * REST layer assemble {@code BookingResponse.seats} (per the approved
-     * API contract) through the service, rather than a controller calling
-     * {@link BookingSeatRepository} directly. Performs no locking and no
-     * validation beyond what the repository itself does — this is not new
-     * business logic, just a plain read already used internally by
-     * {@link #lockSeatsForBooking}.
-     */
     @Transactional(readOnly = true)
     public List<BookingSeat> getBookingSeats(UUID bookingId) {
         return bookingSeatRepository.findByBookingId(bookingId);
+    }
+
+    /** Exposes the configured hold duration for DTOs / the controller. */
+    public Duration getHoldDuration() {
+        return holdDuration;
     }
 
     // ─── internal helpers ───────────────────────────────────────────────
@@ -402,7 +356,6 @@ public class BookingService {
                 .orElseThrow(() -> new BookingNotFoundException(bookingId));
     }
 
-    /** Locked fetch of the ShowSeats referenced by a booking's line items. */
     private List<ShowSeat> lockSeatsForBooking(UUID bookingId) {
         List<BookingSeat> lineItems = bookingSeatRepository.findByBookingId(bookingId);
         List<UUID> showSeatIds = lineItems.stream()
@@ -411,29 +364,61 @@ public class BookingService {
         return lockShowSeats(showSeatIds);
     }
 
-    /**
-     * Locks and fetches the given ShowSeats via
-     * {@link ShowSeatRepository#lockAllByIdIn} — see class Javadoc for why
-     * this is the concurrency-safe operation. Every caller of this method
-     * must already be running inside an {@code @Transactional} method.
-     *
-     * @throws EntityNotFoundException if any id doesn't resolve to a real ShowSeat
-     */
     private List<ShowSeat> lockShowSeats(List<UUID> showSeatIds) {
         List<ShowSeat> seats = showSeatRepository.lockAllByIdIn(showSeatIds);
         if (seats.size() != showSeatIds.size()) {
             Set<UUID> found = seats.stream().map(ShowSeat::getId).collect(Collectors.toSet());
             UUID missing = showSeatIds.stream().filter(id -> !found.contains(id)).findFirst()
-                    .orElseThrow(); // sizes differ, so at least one is missing
+                    .orElseThrow();
             throw new EntityNotFoundException("ShowSeat not found: " + missing);
         }
         return seats;
+    }
+
+    /**
+     * Lazy expiration: any locked seat whose hold has expired is reverted
+     * to AVAILABLE inline, before the caller's own validation runs. This
+     * ensures an expired hold never blocks a new hold or booking even
+     * between scheduled cleanup runs.
+     */
+    private void expireStaleHolds(List<ShowSeat> seats) {
+        Instant now = Instant.now();
+        for (ShowSeat seat : seats) {
+            if (seat.getStatus() == ShowSeatStatus.HELD
+                    && seat.getHoldExpiresAt() != null
+                    && seat.getHoldExpiresAt().isBefore(now)) {
+                clearHoldFields(seat);
+            }
+        }
+    }
+
+    private void clearHoldFields(ShowSeat seat) {
+        seat.setStatus(ShowSeatStatus.AVAILABLE);
+        seat.setHolderUserId(null);
+        seat.setHeldAt(null);
+        seat.setHoldExpiresAt(null);
     }
 
     private void validateSeatsInStatus(List<ShowSeat> seats, ShowSeatStatus expected) {
         for (ShowSeat seat : seats) {
             if (seat.getStatus() != expected) {
                 throw new InvalidSeatStateException(seat.getId(), expected, seat.getStatus());
+            }
+        }
+    }
+
+    /**
+     * Validates that every seat is HELD by the given user. Throws
+     * {@link InvalidSeatStateException} if any seat is not HELD or is held
+     * by a different user.
+     */
+    private void validateSeatsHeldByUser(List<ShowSeat> seats, UUID userId) {
+        for (ShowSeat seat : seats) {
+            if (seat.getStatus() != ShowSeatStatus.HELD) {
+                throw new InvalidSeatStateException(seat.getId(), ShowSeatStatus.HELD, seat.getStatus());
+            }
+            if (!userId.equals(seat.getHolderUserId())) {
+                throw new InvalidSeatStateException(seat.getId(), "is held by another user");
             }
         }
     }

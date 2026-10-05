@@ -803,63 +803,79 @@ this.
 
 # 16. Seat Hold Architecture
 
-Redis can be used for temporary seat holds.
-
-Conceptually:
+Seat holds are temporary, time-bounded claims on seats. A hold records
+*who* holds the seat, *when* the hold was created, and *when* it expires.
 
 ```text
 User selects seat
        │
        ▼
-Booking Service
+Booking Service (holdSeats)
        │
        ▼
-Redis
+PostgreSQL show_seats
+  status = HELD
+  holder_user_id = <caller>
+  hold_expires_at = now + duration
        │
-       ▼
-Temporary Hold
-       │
-       ├── Booking succeeds
+       ├── createBooking (within expiry, by same user)
        │       ↓
-       │     BOOKED
+       │     BOOKED (hold fields cleared)
        │
        └── Hold expires
-               ↓
-           AVAILABLE
+           ├── Lazy: next access clears hold inline
+           └── Scheduled: SeatHoldExpirationScheduler sweep
+                   ↓
+               AVAILABLE (hold fields cleared)
 ```
 
-Redis is responsible for temporary, time-sensitive state.
+PostgreSQL is the single source of truth for both holds and bookings.
+Redis is not involved in seat holds.
 
-PostgreSQL remains the durable source of truth for confirmed bookings.
+## 16.1 Hold Ownership (Phase 22)
 
-The final booking flow must prevent a Redis hold from being treated as a confirmed booking without durable database confirmation.
+`holdSeats` records the authenticated user's id on each seat
+(`show_seats.holder_user_id`, migration 0017). `createBooking` verifies
+the requesting user matches the seat's holder — a seat held by user A
+cannot be booked by user B. `releaseHoldForCaller` only releases seats
+owned by the caller; `releaseHold` (system-level, used internally) has
+no ownership check.
 
-**Implementation status: this design was not built.** The real hold
-mechanism (`POST /api/bookings/shows/{showId}/seats/hold`) is a direct
-`show_seats.status` transition (`AVAILABLE → HELD`) under the §15 row
-lock — no Redis involvement at all, and none of the diagram above is
-real. Concretely, per `BookingService`'s own documented "what is NOT
-safe / NOT implemented yet":
+The controller validates that `HoldSeatsRequest.userId` matches the JWT
+subject before forwarding to the service, following the same pattern as
+`createBooking`'s own userId validation.
 
-* **No hold ownership.** `show_seats` has no column recording *who* holds
-  a seat. `holdSeats` accepts a `userId` parameter, but it is currently
-  unused — not stored, not checked. Any authenticated caller who knows a
-  `showSeatId` can act on a hold regardless of who created it.
-* **No hold expiry.** There is no TTL anywhere. A seat set to `HELD`
-  stays `HELD` indefinitely unless something explicitly calls
-  `releaseHold` or a booking is cancelled — an abandoned checkout
-  permanently locks a seat today. (This is specific to *seat* holds; it is
-  unrelated to payment expiry, §25.3/FR-45, which does have a real
-  scheduled sweep.) The frontend's own seat-hold countdown timer
-  (`eventtick/src/pages/SeatSelection.tsx`) is explicitly documented there
-  as a **display-only** countdown with no corresponding backend
-  expiration — selecting seats and never completing checkout leaves them
-  `HELD` forever.
+## 16.2 Hold Expiration (Phase 22)
 
-Closing this gap (a Redis-backed hold with ownership and TTL, or an
-equivalent scheduled sweep) remains unimplemented, unscheduled, future
-work — not a partially-built Redis integration quietly failing, but code
-that was never written.
+Hold duration is configurable via `booking.seat-hold.duration` (default
+10 minutes, env `SEAT_HOLD_DURATION`). Two mechanisms ensure expired
+holds are cleaned up:
+
+1. **Lazy expiration.** `BookingService.expireStaleHolds` runs after
+   locking seats in any write path (`holdSeats`, `createBooking`). If a
+   locked seat is HELD with `hold_expires_at < now()`, it is reverted to
+   AVAILABLE inline before the caller's validation runs. This guarantees
+   an expired hold never blocks a new hold or booking, even between
+   scheduled runs.
+
+2. **Scheduled cleanup.** `SeatHoldExpirationScheduler` runs a bulk
+   `UPDATE` (via `ShowSeatRepository.releaseExpiredHolds`) at a
+   configurable interval (`booking.seat-hold.cleanup-interval-ms`,
+   default 60s). This frees orphaned holds that no subsequent request
+   ever touched — e.g. a user who abandoned checkout entirely.
+
+3. **DTO-level expiration.** `SeatMapItemDto.from` reports expired HELD
+   seats as AVAILABLE in the seat map response, so the frontend reflects
+   reality even before the database is updated.
+
+## 16.3 Frontend Integration (Phase 22)
+
+`HoldSeatsResponse` now includes `holdExpiresAt`. The frontend:
+- `SeatSelection.tsx`: captures `holdExpiresAt` from the hold response
+  and passes it to `BookingSummary` via navigation state.
+- `BookingSummary.tsx`: shows a real countdown timer based on
+  `holdExpiresAt`. When the countdown reaches zero, the "Confirm & Pay"
+  button is disabled and an expiration warning is shown.
 
 ---
 
@@ -976,17 +992,11 @@ Token Bucket State
 
 ### Temporary Seat Holds
 
-```text
-Show + Seat
-     │
-     ▼
-Temporary Redis Hold
-```
-
-**Not implemented** — see §16. Seat holds are a plain PostgreSQL
-`show_seats.status` column transition under a row lock; Redis plays no
-role in them. Rate limiting (above) remains the one real use of Redis in
-this project.
+Seat holds are implemented entirely in PostgreSQL (see §16), not Redis.
+The `show_seats` table carries `holder_user_id`, `held_at`, and
+`hold_expires_at` columns (migration 0017), with lazy expiration on
+access and a scheduled sweep (`SeatHoldExpirationScheduler`). Rate
+limiting (above) remains the one real use of Redis in this project.
 
 ### Future Caching
 

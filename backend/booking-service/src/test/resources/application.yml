@@ -57,3 +57,11 @@ eventtick:
     producer: booking-service
     publish-sweep-interval-ms: 999999999
     publish-batch-size: 50
+
+# Phase 22: hold duration for tests, cleanup interval set huge so the
+# @Scheduled sweep never fires in ordinary @SpringBootTest contexts (same
+# pattern as publish-sweep-interval-ms above).
+booking:
+  seat-hold:
+    duration: 10m
+    cleanup-interval-ms: 999999999

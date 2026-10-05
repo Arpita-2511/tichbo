@@ -17,6 +17,7 @@ import org.springframework.test.context.TestPropertySource;
 
 import java.lang.reflect.Constructor;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,20 +32,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * schema (same {@code create-drop} pattern as {@code
  * OutboxEventRepositoryTest}, for the same reason).
  *
- * <p><b>Which failure this test uses, and why.</b> {@code createBooking}'s
- * outbox write is unconditionally its last statement — nothing in the
- * method can fail <i>after</i> it today, so there is no existing code path
- * that reaches the outbox write and then still rolls back. Fabricating one
- * (e.g. mocking {@link OutboxService} to throw) would test a scenario that
- * cannot actually happen, not the real behavior. Instead, {@link
- * #createBooking_failure_rollsBackBothTheBookingAndTheOutboxRow} uses the
- * failure point closest to the writes among {@code createBooking}'s real,
- * already-tested exception paths — "this seat already has an active
- * booking" — which fires after seats are locked and validated but before
- * the booking or outbox rows are ever written, and asserts neither exists
- * afterward. Combined with the success test below (both rows exist
- * together), this demonstrates the transaction is genuinely all-or-nothing,
- * not merely that failing early skips later statements.
+ * <p>Phase 22: {@code heldSeat} now sets {@code holderUserId} and
+ * {@code holdExpiresAt}, and callers pass a consistent userId so the
+ * ownership check in {@code createBooking} succeeds.
  */
 @SpringBootTest
 @TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=create-drop")
@@ -65,21 +55,7 @@ class BookingCreationOutboxIntegrationTest {
     @Autowired
     private ShowSeatRepository showSeatRepository;
 
-    /**
-     * {@code ShowSeat} has no public/business constructor — built the same
-     * reflective way its own tests do. Seeded via {@code
-     * showSeatRepository.saveAndFlush(...)}, not a raw {@code
-     * EntityManager}: this test class is a plain JUnit object, not a
-     * Spring-managed bean, so a {@code @Transactional} annotation on one of
-     * its own methods would be inert (Spring AOP never proxies it) — the
-     * repository's own inherited, already-transactional {@code save}
-     * (§48/Phase 15 Step 3's own lesson about {@code @Modifying} methods
-     * needing this doesn't apply to save/saveAndFlush, which already carry
-     * it from {@code SimpleJpaRepository}) is what actually commits this
-     * seed row in its own transaction before {@code createBooking} runs in
-     * a separate one.
-     */
-    private ShowSeat heldSeat(UUID showId, BigDecimal price) {
+    private ShowSeat heldSeat(UUID showId, BigDecimal price, UUID holderId) {
         try {
             Constructor<ShowSeat> ctor = ShowSeat.class.getDeclaredConstructor();
             ctor.setAccessible(true);
@@ -88,6 +64,9 @@ class BookingCreationOutboxIntegrationTest {
             seat.setSeatId(UUID.randomUUID());
             seat.setStatus(ShowSeatStatus.HELD);
             seat.setPrice(price);
+            seat.setHolderUserId(holderId);
+            seat.setHeldAt(Instant.now());
+            seat.setHoldExpiresAt(Instant.now().plusSeconds(600));
             return showSeatRepository.saveAndFlush(seat);
         } catch (ReflectiveOperationException e) {
             throw new RuntimeException(e);
@@ -98,7 +77,7 @@ class BookingCreationOutboxIntegrationTest {
     void createBooking_success_writesTheBookingAndItsOutboxRow_inOneTransaction() {
         UUID showId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
-        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"));
+        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"), userId);
 
         Booking booking = bookingService.createBooking(userId, showId, List.of(seat.getId()), "corr-abc");
 
@@ -117,7 +96,7 @@ class BookingCreationOutboxIntegrationTest {
     void createBooking_success_outboxPayload_carriesTheBookingsOwnData_andTheGivenCorrelationId() throws Exception {
         UUID showId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
-        ShowSeat seat = heldSeat(showId, new BigDecimal("750.00"));
+        ShowSeat seat = heldSeat(showId, new BigDecimal("750.00"), userId);
 
         Booking booking = bookingService.createBooking(userId, showId, List.of(seat.getId()), "corr-xyz");
 
@@ -137,21 +116,20 @@ class BookingCreationOutboxIntegrationTest {
     @Test
     void createBooking_failure_rollsBackBothTheBookingAndTheOutboxRow() {
         UUID showId = UUID.randomUUID();
-        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"));
+        UUID userId = UUID.randomUUID();
+        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"), userId);
         long bookingsBefore = bookingRepository.count();
         long outboxRowsBefore = outboxEventRepository.count();
 
-        // Book it once successfully first, so the seat now has an active
-        // (PENDING) booking...
-        bookingService.createBooking(UUID.randomUUID(), showId, List.of(seat.getId()), "corr-1");
+        bookingService.createBooking(userId, showId, List.of(seat.getId()), "corr-1");
         long bookingsAfterFirst = bookingRepository.count();
         long outboxRowsAfterFirst = outboxEventRepository.count();
         assertThat(bookingsAfterFirst).isEqualTo(bookingsBefore + 1);
         assertThat(outboxRowsAfterFirst).isEqualTo(outboxRowsBefore + 1);
 
-        // ...so a second attempt on the SAME seat fails, after seats are
-        // locked and validated but before either write happens.
-        assertThatThrownBy(() -> bookingService.createBooking(UUID.randomUUID(), showId, List.of(seat.getId()), "corr-2"))
+        // Second attempt by the same user on the same seat fails because
+        // it already has an active booking.
+        assertThatThrownBy(() -> bookingService.createBooking(userId, showId, List.of(seat.getId()), "corr-2"))
                 .isInstanceOf(InvalidSeatStateException.class);
 
         assertThat(bookingRepository.count()).isEqualTo(bookingsAfterFirst);
@@ -160,17 +138,11 @@ class BookingCreationOutboxIntegrationTest {
 
     @Test
     void createBooking_succeeds_evenThoughNoKafkaBrokerIsReachableAtAll() {
-        // This Spring context's own bootstrap-servers (inherited from
-        // src/test/resources/application.yml) points at localhost:1 — an
-        // address nothing is listening on. createBooking/OutboxService have
-        // no KafkaTemplate dependency at all (only OutboxPublisher does,
-        // and nothing here calls it), so this succeeding at all is the
-        // proof: booking creation cannot be affected by Kafka's
-        // availability, because it never talks to Kafka.
         UUID showId = UUID.randomUUID();
-        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"));
+        UUID userId = UUID.randomUUID();
+        ShowSeat seat = heldSeat(showId, new BigDecimal("500.00"), userId);
 
-        Booking booking = bookingService.createBooking(UUID.randomUUID(), showId, List.of(seat.getId()), "corr-no-kafka");
+        Booking booking = bookingService.createBooking(userId, showId, List.of(seat.getId()), "corr-no-kafka");
 
         assertThat(bookingRepository.findById(booking.getId())).isPresent();
         assertThat(outboxEventRepository.findAll().stream().anyMatch(r -> r.getAggregateId().equals(booking.getId())))

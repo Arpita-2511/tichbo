@@ -16,10 +16,13 @@ import java.util.UUID;
 
 /**
  * Maps to the {@code show_seats} table (see
- * {@code database/migrations/0008_create_show_seats_table.up.sql}) — the
- * availability of one physical seat for one specific show: {@code showId},
- * {@code seatId}, {@code status}, and {@code price}, exactly as the
- * migration defines them.
+ * {@code database/migrations/0008_create_show_seats_table.up.sql} and
+ * {@code 0017_add_hold_ownership_to_show_seats.up.sql}) — the availability
+ * of one physical seat for one specific show: {@code showId},
+ * {@code seatId}, {@code status}, {@code price}, and (Phase 22) the
+ * hold-ownership columns {@code holderUserId}, {@code heldAt},
+ * {@code holdExpiresAt} that track who holds the seat and when that hold
+ * expires.
  *
  * <p><b>Cross-service foreign keys ({@code showId}, {@code seatId}):</b>
  * {@code shows} and {@code seats} are owned by catalog-service, not
@@ -69,6 +72,21 @@ public class ShowSeat {
     /** Ticket price for this seat at this show. */
     @Column(name = "price", nullable = false, precision = 10, scale = 2)
     private BigDecimal price;
+
+    /**
+     * FK to {@code users.id} (migration 0017). Populated only while
+     * {@code status = HELD}; null when AVAILABLE or BOOKED.
+     */
+    @Column(name = "holder_user_id")
+    private UUID holderUserId;
+
+    /** When this hold was created (migration 0017). Null when not HELD. */
+    @Column(name = "held_at")
+    private Instant heldAt;
+
+    /** When this hold expires (migration 0017). Null when not HELD. */
+    @Column(name = "hold_expires_at")
+    private Instant holdExpiresAt;
 
     // Schema-generation hints only (matches Payment.createdAt's own
     // precedent, added in Phase 16 Step 2 when this entity's H2 schema was
@@ -134,6 +152,30 @@ public class ShowSeat {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public UUID getHolderUserId() {
+        return holderUserId;
+    }
+
+    public void setHolderUserId(UUID holderUserId) {
+        this.holderUserId = holderUserId;
+    }
+
+    public Instant getHeldAt() {
+        return heldAt;
+    }
+
+    public void setHeldAt(Instant heldAt) {
+        this.heldAt = heldAt;
+    }
+
+    public Instant getHoldExpiresAt() {
+        return holdExpiresAt;
+    }
+
+    public void setHoldExpiresAt(Instant holdExpiresAt) {
+        this.holdExpiresAt = holdExpiresAt;
     }
 
     @Override
