@@ -896,29 +896,37 @@ export async function getAdminOverviewStats(): Promise<AdminOverviewStats> {
 
 // ─── Search ──────────────────────────────────────────────────────────────────
 
-/**
- * Search real catalog content (GET /api/catalog/content) with client-side
- * filtering on title, genre, and language — the only text fields
- * catalog-service's Content entity actually carries.
- */
+interface BackendSearchResult {
+  id: string;
+  type: ContentType;
+  title: string;
+  description: string | null;
+  language: string | null;
+  genre: string | null;
+  releaseOrEventDate: string | null;
+}
+
+interface BackendSearchPage {
+  results: BackendSearchResult[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+}
+
 export async function searchEvents(query: string): Promise<SearchResult[]> {
   if (!query.trim()) return [];
-  const q = query.toLowerCase();
-  const content = await request<BackendContent[]>('/api/catalog/content', { auth: true });
-  return content
-    .filter(c =>
-      c.title.toLowerCase().includes(q) ||
-      (c.genre ?? '').toLowerCase().includes(q) ||
-      (c.language ?? '').toLowerCase().includes(q) ||
-      (c.description ?? '').toLowerCase().includes(q)
-    )
-    .slice(0, 12)
-    .map(c => ({
-      id: c.id,
-      type: c.type,
-      title: c.title,
-      subtitle: [c.genre, c.language].filter(Boolean).join(' • '),
-      image: PLACEHOLDER_IMAGE,
-    }));
+  const params = new URLSearchParams({ q: query.trim(), size: '12' });
+  const data = await request<BackendSearchPage>(
+    `/api/catalog/search?${params.toString()}`,
+    { auth: true },
+  );
+  return data.results.map(r => ({
+    id: r.id,
+    type: r.type,
+    title: r.title,
+    subtitle: [r.genre, r.language].filter(Boolean).join(' • '),
+    image: PLACEHOLDER_IMAGE,
+  }));
 }
 

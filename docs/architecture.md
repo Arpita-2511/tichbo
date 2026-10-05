@@ -4806,6 +4806,7 @@ this satisfies; this section states the architecture.
 |---|---|---|
 | `login`, `signup`, `logout`, `getCurrentUser` | `POST /api/auth/{login,register}`, `GET /api/users/me` | user-service |
 | `getEvents`, `getEventById` | `GET /api/catalog/content(/{id})` | catalog-service |
+| `searchEvents` | `GET /api/catalog/search?q=&category=&date=&location=&venue=&page=&size=` | catalog-service |
 | `getVenueById`, `getVenuesByCity` | `GET /api/catalog/venues(/{id})` | catalog-service |
 | `getShowsByEvent`, `getShowById` | `GET /api/catalog/shows(/{id})` | catalog-service |
 | `getSeatMap` | `GET /api/catalog/seats?venueId=`, `GET /api/bookings/shows/{id}/seats` | catalog-service + booking-service, joined client-side |
@@ -4822,14 +4823,34 @@ or credential is hardcoded anywhere in this layer.
 
 Catalog Service's list endpoints (`GET /api/catalog/{content,venues,shows}`)
 take **no query parameters at all** — no `type`/`contentId`/`city` filter,
-no pagination, no search (§8). Rather than inventing endpoints that don't
-exist, the frontend fetches the full list and filters client-side
+no pagination. Rather than inventing endpoints that don't exist, the
+frontend fetches the full list and filters client-side
 (`getEvents(type)`, `getShowsByEvent(contentId)`,
 `getVenuesByCity(city)`) — acceptable at this project's seed-data scale,
 not a pattern that would survive real volume. `getTrendingEvents`/
 `getFeaturedEvents` remain mock: Catalog Service's `Content` entity has no
-trending/featured concept, and `searchEvents` remains mock: Catalog
-Service has no search endpoint (FR-09 is unimplemented on the backend).
+trending/featured concept.
+
+**Search is real (Phase 23, FR-09/FR-10).** `GET /api/catalog/search`
+accepts query parameters `q` (text), `category` (ContentType enum),
+`date` (ISO date), `location` (city), `venue` (UUID), `page`, and `size`.
+The query joins `Show → Content → Venue` at the database level using
+dynamic JPQL with named parameters (no in-memory filtering). Only content
+with at least one `SCHEDULED` show appears in results. Text search applies
+case-insensitive `LIKE` across `title`, `description`, `genre`, and
+`language`. Results are paginated, deduplicated by content, and sorted
+deterministically by `title ASC, id ASC`. Migration 0018 adds `pg_trgm`
+GIN indexes on `content.title` and `content.description` to accelerate
+`%term%` patterns, and a btree index on `LOWER(venues.city)` for exact
+city matching.
+
+**Availability filtering** is not included in the search endpoint.
+`show_seats` is owned by booking-service (§10), and catalog-service does
+not depend on booking-service's database. Availability is checked at the
+seat-selection step (`GET /api/bookings/shows/{id}/seats`), which is the
+correct service boundary. A future composition layer or API gateway
+aggregation could combine search results with per-show availability
+counts without violating service ownership.
 
 Real `Content` (§9) has no image/banner/rating/cast/price/city columns;
 real `Venue` (§11) has no state/pincode. The frontend's `Venue.state`/
