@@ -13,6 +13,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -30,6 +31,11 @@ public class UserService {
     public UserService(UserRepository userRepository, PlanRepository planRepository) {
         this.userRepository = userRepository;
         this.planRepository = planRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Plan> listPlans() {
+        return planRepository.findAllByOrderByPriceAsc();
     }
 
     /**

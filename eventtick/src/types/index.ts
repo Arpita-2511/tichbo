@@ -11,9 +11,7 @@ export type SeatStatus = 'AVAILABLE' | 'SELECTED' | 'BOOKED' | 'UNAVAILABLE';
 
 export type SeatCategory = 'VIP' | 'PREMIUM' | 'REGULAR';
 
-// 'PRO' is a real plan in the backend's seed data (Free / Pro / Premium);
-// 'VIP' only exists in the mock plan list and is kept until Plans is wired up.
-export type SubscriptionPlan = 'FREE' | 'PRO' | 'PREMIUM' | 'VIP';
+export type SubscriptionPlan = 'FREE' | 'PRO' | 'PREMIUM';
 
 // ─── Content / Event ─────────────────────────────────────────────────────────
 
@@ -146,13 +144,10 @@ export interface User {
 // ─── Subscription Plan ───────────────────────────────────────────────────────
 
 export interface Plan {
-  id: SubscriptionPlan;
+  id: string;
   name: string;
   price: number;
-  period: string;
-  features: string[];
-  limits: RateLimitPolicy[];
-  highlighted?: boolean;
+  description: string;
 }
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────

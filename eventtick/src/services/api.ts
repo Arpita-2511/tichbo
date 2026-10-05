@@ -35,7 +35,7 @@ import type {
 } from '../types';
 
 import {
-  allEvents, plans,
+  allEvents,
   adminStats
 } from '../data/mockData';
 
@@ -717,7 +717,7 @@ interface BackendUser {
   createdAt: string;
 }
 
-const KNOWN_PLANS: readonly SubscriptionPlan[] = ['FREE', 'PRO', 'PREMIUM', 'VIP'];
+const KNOWN_PLANS: readonly SubscriptionPlan[] = ['FREE', 'PRO', 'PREMIUM'];
 
 // Backend plan names are "Free" / "Pro" / "Premium"; the frontend's
 // SubscriptionPlan is upper case. Display only — never used for access control.
@@ -787,14 +787,18 @@ export async function getCurrentUser(): Promise<User | null> {
 
 // ─── Plans ───────────────────────────────────────────────────────────────────
 
+interface BackendPlan { id: string; name: string; price: number; description: string }
+
 export async function getPlans(): Promise<Plan[]> {
-  await delay(300);
-  return plans;
+  const backendPlans = await request<BackendPlan[]>('/api/users/plans', { auth: true });
+  return backendPlans.map(p => ({ id: p.id, name: p.name, price: p.price, description: p.description }));
 }
 
-export async function subscribeToPlan(_planId: string): Promise<boolean> {
-  await delay(500);
-  return true;
+export async function subscribeToPlan(planId: string): Promise<User> {
+  const res = await request<{ accessToken: string; user: BackendUser }>(
+    '/api/users/me/plan', { method: 'PATCH', body: { planId }, auth: true });
+  storeToken(res.accessToken);
+  return toUser(res.user);
 }
 
 // ─── Admin ───────────────────────────────────────────────────────────────────

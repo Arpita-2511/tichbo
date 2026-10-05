@@ -81,8 +81,8 @@ export function useApp() {
 // Convenience subscription plan accessor
 export function getPlanBadgeColor(plan: SubscriptionPlan) {
   switch (plan) {
-    case 'VIP': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-    case 'PREMIUM': return 'bg-accent/20 text-accent-lighter border-accent/30';
+    case 'PREMIUM': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+    case 'PRO': return 'bg-accent/20 text-accent-lighter border-accent/30';
     default: return 'bg-border text-text-secondary border-border-light';
   }
 }

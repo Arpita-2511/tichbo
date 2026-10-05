@@ -1034,65 +1034,9 @@ export const mockUser: User = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const plans: Plan[] = [
-  {
-    id: 'FREE',
-    name: 'Free',
-    price: 0,
-    period: 'forever',
-    features: [
-      'Standard booking access',
-      'Up to 4 tickets per booking',
-      'Email confirmation',
-      'Standard support',
-    ],
-    limits: [
-      { plan: 'FREE', route: '/api/events', limit: 30, window: 'per minute' },
-      { plan: 'FREE', route: '/api/search', limit: 10, window: 'per minute' },
-      { plan: 'FREE', route: '/api/bookings', limit: 5, window: 'per minute' },
-    ],
-  },
-  {
-    id: 'PREMIUM',
-    name: 'Premium',
-    price: 199,
-    period: 'month',
-    highlighted: true,
-    features: [
-      'Priority booking access',
-      'Up to 8 tickets per booking',
-      'SMS + Email confirmation',
-      'Early access to popular events',
-      'Priority customer support',
-      'Exclusive member-only offers',
-      'No booking fees on select events',
-    ],
-    limits: [
-      { plan: 'PREMIUM', route: '/api/events', limit: 100, window: 'per minute' },
-      { plan: 'PREMIUM', route: '/api/search', limit: 50, window: 'per minute' },
-      { plan: 'PREMIUM', route: '/api/bookings', limit: 20, window: 'per minute' },
-    ],
-  },
-  {
-    id: 'VIP',
-    name: 'VIP',
-    price: 499,
-    period: 'month',
-    features: [
-      'Highest priority booking',
-      'Unlimited tickets per booking',
-      'Dedicated concierge support',
-      'First access to all events',
-      'VIP-only exclusive events',
-      'Zero convenience fees',
-      'Complimentary seat upgrades',
-      'Personal event calendar',
-    ],
-    limits: [
-      { plan: 'VIP', route: '/api/events', limit: 500, window: 'per minute' },
-      { plan: 'VIP', route: '/api/search', limit: 100, window: 'per minute' },
-      { plan: 'VIP', route: '/api/bookings', limit: 60, window: 'per minute' },
-    ],
-  },
+  { id: 'mock-free-id', name: 'Free', price: 0, description: 'Basic access' },
+  { id: 'mock-pro-id', name: 'Pro', price: 199, description: 'Enhanced access' },
+  { id: 'mock-premium-id', name: 'Premium', price: 499, description: 'Full access' },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1108,10 +1052,10 @@ export const rateLimitPolicies: RateLimitPolicy[] = [
   { plan: 'PREMIUM', route: 'GET /api/search', limit: 50, window: '1 min' },
   { plan: 'PREMIUM', route: 'POST /api/bookings', limit: 20, window: '1 min' },
   { plan: 'PREMIUM', route: 'GET /api/seats', limit: 60, window: '1 min' },
-  { plan: 'VIP', route: 'GET /api/events', limit: 500, window: '1 min' },
-  { plan: 'VIP', route: 'GET /api/search', limit: 100, window: '1 min' },
-  { plan: 'VIP', route: 'POST /api/bookings', limit: 60, window: '1 min' },
-  { plan: 'VIP', route: 'GET /api/seats', limit: 200, window: '1 min' },
+  { plan: 'PRO', route: 'GET /api/events', limit: 60, window: '1 min' },
+  { plan: 'PRO', route: 'GET /api/search', limit: 30, window: '1 min' },
+  { plan: 'PRO', route: 'POST /api/bookings', limit: 10, window: '1 min' },
+  { plan: 'PRO', route: 'GET /api/seats', limit: 30, window: '1 min' },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
