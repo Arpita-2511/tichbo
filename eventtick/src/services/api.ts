@@ -481,7 +481,8 @@ export async function getBooking(bookingId: string): Promise<BackendBookingRespo
   return request<BackendBookingResponse>(`/api/bookings/${bookingId}`, { auth: true });
 }
 
-function toBooking(b: BackendBookingResponse): Booking {
+function toBaseBooking(b: BackendBookingResponse): Booking {
+  const seatCount = b.seats.length;
   return {
     id: b.bookingId,
     bookingRef: b.bookingId.slice(0, 8).toUpperCase(),
@@ -489,7 +490,7 @@ function toBooking(b: BackendBookingResponse): Booking {
     showId: b.showId,
     contentId: '',
     venueId: '',
-    seats: b.seats.map(s => s.showSeatId.slice(0, 6).toUpperCase()),
+    seats: [seatCount === 1 ? '1 Seat' : `${seatCount} Seats`],
     category: 'REGULAR',
     ticketPrice: b.totalAmount,
     convenienceFee: 0,
@@ -499,29 +500,68 @@ function toBooking(b: BackendBookingResponse): Booking {
   };
 }
 
-/**
- * GET /api/bookings — the caller's own bookings (booking-service enforces
- * ownership via the JWT). The backend's BookingResponse doesn't carry
- * contentId/venueId/seat-labels/bookingRef — those fields are left at
- * defaults until a future enrichment phase joins them from catalog-service.
- */
+async function enrichBookings(raw: BackendBookingResponse[]): Promise<Booking[]> {
+  const bookings = raw.map(toBaseBooking);
+  if (bookings.length === 0) return bookings;
+
+  const uniqueShowIds = [...new Set(raw.map(b => b.showId))];
+
+  const shows = await Promise.all(
+    uniqueShowIds.map(id => getShowById(id).catch(() => null))
+  );
+  const showMap = new Map(
+    shows.filter((s): s is Show => s !== null).map(s => [s.id, s])
+  );
+
+  const contentIds = [...new Set(
+    [...showMap.values()].map(s => s.contentId).filter(Boolean)
+  )];
+  const venueIds = [...new Set(
+    [...showMap.values()].map(s => s.venueId).filter(Boolean)
+  )];
+
+  const [contents, venues] = await Promise.all([
+    Promise.all(contentIds.map(id => getEventById(id).catch(() => null))),
+    Promise.all(venueIds.map(id => getVenueById(id).catch(() => null))),
+  ]);
+  const contentMap = new Map(
+    contents.filter((c): c is Content => c !== null).map(c => [c.id, c])
+  );
+  const venueMap = new Map(
+    venues.filter((v): v is Venue => v !== null).map(v => [v.id, v])
+  );
+
+  for (let i = 0; i < bookings.length; i++) {
+    const show = showMap.get(raw[i].showId);
+    if (!show) continue;
+    bookings[i].show = show;
+    bookings[i].contentId = show.contentId;
+    bookings[i].venueId = show.venueId;
+    const content = contentMap.get(show.contentId);
+    if (content) bookings[i].content = content;
+    const venue = venueMap.get(show.venueId);
+    if (venue) bookings[i].venue = venue;
+  }
+
+  return bookings;
+}
+
 export async function getBookings(): Promise<Booking[]> {
   const list = await request<BackendBookingResponse[]>('/api/bookings', { auth: true });
-  return list.map(toBooking);
+  return enrichBookings(list);
 }
 
 /**
  * POST /api/bookings/{id}/cancel — cancels a booking the caller owns.
- * Returns the updated BookingResponse (status: CANCELLED). Throws
- * ApiError on failure (404 not found, 403 not owner, 409 already
- * cancelled/not cancellable).
+ * Returns the raw backend response so the caller can merge the updated
+ * status into an already-enriched booking without losing show/content/venue
+ * data. Throws ApiError on failure (404/403/409).
  */
-export async function cancelBooking(id: string): Promise<Booking> {
-  const res = await request<BackendBookingResponse>(`/api/bookings/${id}/cancel`, {
+export async function cancelBooking(id: string): Promise<BackendBookingResponse> {
+  return request<BackendBookingResponse>(`/api/bookings/${id}/cancel`, {
     method: 'POST',
     auth: true,
   });
-  return toBooking(res);
 }
 
 // ─── Payments ────────────────────────────────────────────────────────────────
@@ -773,7 +813,7 @@ interface SpringPage<T> { content: T[]; totalElements: number; totalPages: numbe
 export async function getAdminBookings(): Promise<Booking[]> {
   const page = await request<SpringPage<BackendBookingResponse>>(
     '/api/admin/bookings?size=20&sort=createdAt,desc', { auth: true });
-  return page.content.map(toBooking);
+  return enrichBookings(page.content);
 }
 
 // Phase 19: real dynamic rate-limit policy CRUD — replaces the mock

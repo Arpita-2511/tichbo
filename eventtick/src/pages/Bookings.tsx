@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Ticket } from 'lucide-react';
-import { getBookings, cancelBooking, ApiError } from '../services/api';
+import { getBookings, cancelBooking, ApiError, type BackendBookingResponse } from '../services/api';
 import { useApp } from '../context/AppContext';
 import type { Booking } from '../types';
 import EmptyState from '../components/common/EmptyState';
@@ -38,8 +38,10 @@ export default function Bookings() {
   const handleCancel = async (id: string) => {
     if (!window.confirm('Cancel this booking?')) return;
     try {
-      const updated = await cancelBooking(id);
-      setBookings(bs => bs.map(b => (b.id === id ? updated : b)));
+      const raw: BackendBookingResponse = await cancelBooking(id);
+      setBookings(bs => bs.map(b =>
+        b.id === id ? { ...b, status: raw.status, totalAmount: raw.totalAmount } : b
+      ));
     } catch (err) {
       alert(err instanceof ApiError ? err.message : 'Cancellation failed.');
     }
@@ -72,11 +74,11 @@ export default function Bookings() {
                   <span className="font-mono text-xs text-accent-lighter">{b.bookingRef}</span>
                   <span className={`badge border text-[10px] ${statusColors[b.status]}`}>{b.status}</span>
                 </div>
-                <div className="text-text-primary font-semibold truncate">{b.content?.title ?? b.contentId}</div>
+                <div className="text-text-primary font-semibold truncate">{b.content?.title || 'Booking'}</div>
                 <div className="text-text-muted text-xs mt-0.5">
-                  {[b.venue?.name, b.show && `${b.show.date} • ${b.show.timeLabel}`].filter(Boolean).join(' • ')}
+                  {[b.venue?.name, b.show && `${b.show.date} • ${b.show.timeLabel}`].filter(Boolean).join(' • ') || '–'}
                 </div>
-                <div className="text-text-secondary text-xs font-mono mt-1">Seats: {b.seats.join(', ')}</div>
+                <div className="text-text-secondary text-xs mt-1">{b.seats.join(', ')}</div>
               </div>
               <div className="flex sm:flex-col items-center sm:items-end gap-3 sm:gap-2">
                 <div className="text-text-primary font-bold">₹{b.totalAmount.toLocaleString('en-IN')}</div>
