@@ -1,4 +1,4 @@
-# Tichboo — Scalable Ticket Booking Platform
+# Eventtick — Scalable Ticket Booking Platform
 
 ## 1. Overview
 
